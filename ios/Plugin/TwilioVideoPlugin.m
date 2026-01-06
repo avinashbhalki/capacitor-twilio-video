@@ -1,12 +1,13 @@
-import Foundation
-import Capacitor
+#import <Foundation/Foundation.h>
+#import <Capacitor/Capacitor.h>
 
-@objc(TwilioVideoPlugin)
-public class TwilioVideoPlugin: CAPPlugin {
-    @objc func joinRoom(_ call: CAPPluginCall) {}
-    @objc func leaveRoom(_ call: CAPPluginCall) {}
-    @objc func muteAudio(_ call: CAPPluginCall) {}
-    @objc func enableVideo(_ call: CAPPluginCall) {}
-    @objc func flipCamera(_ call: CAPPluginCall) {}
-    @objc func setSpeaker(_ call: CAPPluginCall) {}
-}
+// Define the plugin using the CAP_PLUGIN Macro, and
+// each method the plugin supports using the CAP_PLUGIN_METHOD macro.
+CAP_PLUGIN(TwilioVideoPlugin, "TwilioVideo",
+    CAP_PLUGIN_METHOD(joinRoom, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(leaveRoom, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(muteAudio, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(enableVideo, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(flipCamera, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(setSpeaker, CAPPluginReturnPromise);
+)

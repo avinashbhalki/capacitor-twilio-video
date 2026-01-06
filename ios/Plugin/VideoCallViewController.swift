@@ -4,6 +4,15 @@ import AVFoundation
 
 class VideoCallViewController: UIViewController {
 
+    // MARK: - Call State Machine
+    enum CallState {
+        case idle            // No active call
+        case joining         // joinRoom invoked, not yet connected
+        case connected       // Room connected
+        case disconnecting   // leaveRoom or auto-close in progress
+        case disconnected    // Call fully ended
+    }
+
     // MARK: - Properties
     var accessToken: String?
     var roomName: String?
@@ -14,6 +23,9 @@ class VideoCallViewController: UIViewController {
     private var localAudioTrack: LocalAudioTrack?
     private var camera: CameraSource?
     private var remoteParticipantCount = 0
+
+    // Call state
+    private var callState: CallState = .idle
 
     // UI Elements
     private var primaryVideoView: VideoView!
@@ -30,12 +42,20 @@ class VideoCallViewController: UIViewController {
     private var isVideoEnabled = true
     private var isSpeakerEnabled = true
 
+    // Multi-participant video management
+    private var participantVideoViews: [String: VideoView] = [:]
+    private var dominantSpeakerIdentity: String?
+    private var dominantSpeakerDebounceTimer: Timer?
+
     // MARK: - Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
 
         setupFullScreenUI()
         setupLocalMedia()
+
+        // Transition to joining state
+        transitionToState(.joining)
         connectToRoom()
     }
 
@@ -122,9 +142,13 @@ class VideoCallViewController: UIViewController {
         let button = UIButton(type: .system)
         button.setTitle(title, for: .normal)
         button.titleLabel?.font = UIFont.systemFont(ofSize: 24)
-        button.backgroundColor = .systemGray
         button.layer.cornerRadius = 24
         button.translatesAutoresizingMaskIntoConstraints = false
+
+        // Set up stateful colors
+        button.backgroundColor = .systemGray
+        button.setTitleColor(.white, for: .normal)
+        button.setTitleColor(.lightGray, for: .disabled)
 
         NSLayoutConstraint.activate([
             button.widthAnchor.constraint(equalToConstant: 48),
@@ -150,10 +174,14 @@ class VideoCallViewController: UIViewController {
             }
 
             // Start camera
-            camera.startCapture(device: frontCamera()) { (captureDevice, videoFormat, error) in
-                if let error = error {
-                    print("Camera start capture failed: \(error.localizedDescription)")
+            if let device = frontCamera() {
+                camera.startCapture(device: device) { (captureDevice, videoFormat, error) in
+                    if let error = error {
+                        print("Camera start capture failed: \(error.localizedDescription)")
+                    }
                 }
+            } else {
+                print("Failed to get front camera device")
             }
         }
 
@@ -223,17 +251,32 @@ class VideoCallViewController: UIViewController {
     }
 
     func muteAudio(muted: Bool) {
+        guard callState == .connected else {
+            print("Cannot mute audio, not connected. State: \(callState)")
+            return
+        }
+
         isAudioMuted = muted
         localAudioTrack?.isEnabled = !muted
+        updateButtonStates()
     }
 
     func enableVideo(enabled: Bool) {
+        guard callState == .connected else {
+            print("Cannot toggle video, not connected. State: \(callState)")
+            return
+        }
+
         isVideoEnabled = enabled
         localVideoTrack?.isEnabled = enabled
+        updateButtonStates()
     }
 
     @objc func flipCamera() {
-        guard let camera = camera else { return }
+        guard callState == .connected, isVideoEnabled, let camera = camera else {
+            print("Cannot flip camera. State: \(callState), VideoEnabled: \(isVideoEnabled)")
+            return
+        }
 
         let newDevice: AVCaptureDevice?
         if camera.device?.position == .front {
@@ -252,6 +295,11 @@ class VideoCallViewController: UIViewController {
     }
 
     func setSpeaker(enabled: Bool) {
+        guard callState == .connected else {
+            print("Cannot toggle speaker, not connected. State: \(callState)")
+            return
+        }
+
         isSpeakerEnabled = enabled
         let audioSession = AVAudioSession.sharedInstance()
         do {
@@ -263,9 +311,16 @@ class VideoCallViewController: UIViewController {
         } catch {
             print("Failed to set speaker: \(error.localizedDescription)")
         }
+        updateButtonStates()
     }
 
     @objc func disconnect() {
+        guard callState != .disconnecting && callState != .disconnected else {
+            print("Already disconnecting or disconnected, ignoring")
+            return
+        }
+
+        transitionToState(.disconnecting)
         room?.disconnect()
         cleanup()
         dismiss(animated: true, completion: nil)
@@ -273,6 +328,10 @@ class VideoCallViewController: UIViewController {
 
     // MARK: - Cleanup
     private func cleanup() {
+        // Cancel any pending dominant speaker updates
+        dominantSpeakerDebounceTimer?.invalidate()
+        dominantSpeakerDebounceTimer = nil
+
         localVideoTrack?.removeRenderer(thumbnailVideoView)
         localVideoTrack = nil
         localAudioTrack = nil
@@ -280,6 +339,10 @@ class VideoCallViewController: UIViewController {
         camera = nil
         room = nil
         localParticipant = nil
+
+        // Clean up all participant video views
+        participantVideoViews.removeAll()
+        dominantSpeakerIdentity = nil
     }
 
     deinit {
@@ -294,6 +357,69 @@ class VideoCallViewController: UIViewController {
             disconnect()
         }
     }
+
+    // MARK: - Call State Machine
+
+    private func transitionToState(_ newState: CallState) {
+        let oldState = callState
+
+        // Validate state transition
+        let isValidTransition: Bool
+        switch (oldState, newState) {
+        case (.idle, .joining),
+             (.joining, .connected),
+             (.joining, .disconnected),      // Failed to connect
+             (.connected, .disconnecting),
+             (.disconnecting, .disconnected),
+             (.connected, .disconnected):    // Abnormal disconnect
+            isValidTransition = true
+        default:
+            isValidTransition = (oldState == newState)  // Allow same state
+        }
+
+        guard isValidTransition else {
+            print("Invalid state transition: \(oldState) -> \(newState)")
+            return
+        }
+
+        print("Call state transition: \(oldState) -> \(newState)")
+        callState = newState
+
+        // Update UI based on new state
+        DispatchQueue.main.async {
+            self.updateButtonStates()
+        }
+    }
+
+    private func updateButtonStates() {
+        let isConnected = (callState == .connected)
+
+        DispatchQueue.main.async {
+            // Mute button
+            self.muteButton.isEnabled = isConnected
+            self.muteButton.backgroundColor = self.isAudioMuted ? .systemGreen : .systemGray
+            self.muteButton.alpha = isConnected ? 1.0 : 0.5
+
+            // Video button
+            self.videoButton.isEnabled = isConnected
+            self.videoButton.backgroundColor = self.isVideoEnabled ? .systemGray : .systemGreen
+            self.videoButton.alpha = isConnected ? 1.0 : 0.5
+
+            // Flip button
+            self.flipButton.isEnabled = isConnected && self.isVideoEnabled
+            self.flipButton.alpha = (isConnected && self.isVideoEnabled) ? 1.0 : 0.5
+
+            // Speaker button
+            self.speakerButton.isEnabled = isConnected
+            self.speakerButton.backgroundColor = self.isSpeakerEnabled ? .systemGreen : .systemGray
+            self.speakerButton.alpha = isConnected ? 1.0 : 0.5
+
+            // Hangup button - always enabled once joining
+            self.hangupButton.isEnabled = (self.callState == .joining ||
+                                          self.callState == .connected)
+            self.hangupButton.alpha = self.hangupButton.isEnabled ? 1.0 : 0.5
+        }
+    }
 }
 
 // MARK: - Room Delegate
@@ -302,16 +428,26 @@ extension VideoCallViewController: RoomDelegate {
         print("Connected to room: \(room.name)")
         localParticipant = room.localParticipant
 
+        // Transition to CONNECTED state
+        transitionToState(.connected)
+
         TwilioVideoPlugin.getInstance()?.notifyRoomConnected(roomName: room.name)
 
         // Handle existing participants
         for participant in room.remoteParticipants {
             addRemoteParticipant(participant)
         }
+
+        // Update UI to reflect connected state
+        updateButtonStates()
     }
 
     func roomDidFailToConnect(room: Room, error: Error) {
         print("Failed to connect to room: \(error.localizedDescription)")
+
+        // Transition to DISCONNECTED on failure
+        transitionToState(.disconnected)
+
         TwilioVideoPlugin.getInstance()?.notifyRoomError(
             code: "CONNECT_FAILED",
             message: error.localizedDescription,
@@ -322,6 +458,10 @@ extension VideoCallViewController: RoomDelegate {
 
     func roomDidDisconnect(room: Room, error: Error?) {
         print("Disconnected from room: \(room.name)")
+
+        // Transition to DISCONNECTED
+        transitionToState(.disconnected)
+
         TwilioVideoPlugin.getInstance()?.notifyRoomDisconnected(
             roomName: room.name,
             reason: error?.localizedDescription
@@ -354,6 +494,14 @@ extension VideoCallViewController: RoomDelegate {
 
     func dominantSpeakerDidChange(room: Room, participant: RemoteParticipant?) {
         print("Dominant speaker: \(participant?.identity ?? "nil")")
+
+        // Debounce dominant speaker changes to avoid flicker
+        dominantSpeakerDebounceTimer?.invalidate()
+
+        dominantSpeakerDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+            self?.updateDominantSpeaker(participant?.identity)
+        }
+
         TwilioVideoPlugin.getInstance()?.notifyDominantSpeakerChanged(identity: participant?.identity)
     }
 }
@@ -364,10 +512,19 @@ extension VideoCallViewController {
         remoteParticipantCount += 1
         participant.delegate = self
 
+        // Create or get stable video view for this participant
+        let videoView = participantVideoViews[participant.identity] ?? {
+            let view = VideoView(frame: .zero)
+            view.contentMode = .scaleAspectFill
+            participantVideoViews[participant.identity] = view
+            print("Created new VideoView for participant: \(participant.identity)")
+            return view
+        }()
+
         // Subscribe to existing video tracks
         for publication in participant.remoteVideoTracks {
             if let track = publication.remoteTrack, publication.isTrackSubscribed {
-                addRemoteVideoTrack(track)
+                addRemoteVideoTrack(participant.identity, track: track)
             }
         }
     }
@@ -377,20 +534,76 @@ extension VideoCallViewController {
 
         for publication in participant.remoteVideoTracks {
             if let track = publication.remoteTrack, publication.isTrackSubscribed {
-                removeRemoteVideoTrack(track)
+                removeRemoteVideoTrack(participant.identity, track: track)
             }
         }
-    }
 
-    private func addRemoteVideoTrack(_ track: RemoteVideoTrack) {
-        DispatchQueue.main.async {
-            track.addRenderer(self.primaryVideoView)
+        // Clean up video view for this participant
+        if let videoView = participantVideoViews.removeValue(forKey: participant.identity) {
+            DispatchQueue.main.async {
+                if videoView.superview == self.primaryVideoView {
+                    videoView.removeFromSuperview()
+                }
+            }
+            print("Removed VideoView for participant: \(participant.identity)")
         }
     }
 
-    private func removeRemoteVideoTrack(_ track: RemoteVideoTrack) {
+    private func addRemoteVideoTrack(_ participantIdentity: String, track: RemoteVideoTrack) {
+        guard let videoView = participantVideoViews[participantIdentity] else {
+            print("No VideoView found for participant: \(participantIdentity)")
+            return
+        }
+
         DispatchQueue.main.async {
-            track.removeRenderer(self.primaryVideoView)
+            // Add renderer to the stable video view (reuse, don't recreate)
+            track.addRenderer(videoView)
+
+            // If this is the dominant speaker or first participant, show in primary view
+            if self.dominantSpeakerIdentity == participantIdentity || self.remoteParticipantCount == 1 {
+                self.updatePrimaryVideoView(participantIdentity)
+            }
+
+            print("Added video track renderer for participant: \(participantIdentity)")
+        }
+    }
+
+    private func removeRemoteVideoTrack(_ participantIdentity: String, track: RemoteVideoTrack) {
+        guard let videoView = participantVideoViews[participantIdentity] else {
+            print("No VideoView found for participant: \(participantIdentity)")
+            return
+        }
+
+        DispatchQueue.main.async {
+            track.removeRenderer(videoView)
+            print("Removed video track renderer for participant: \(participantIdentity)")
+        }
+    }
+
+    private func updateDominantSpeaker(_ participantIdentity: String?) {
+        dominantSpeakerIdentity = participantIdentity
+
+        if let identity = participantIdentity {
+            updatePrimaryVideoView(identity)
+        }
+    }
+
+    private func updatePrimaryVideoView(_ participantIdentity: String) {
+        guard let videoView = participantVideoViews[participantIdentity] else { return }
+
+        DispatchQueue.main.async {
+            // Only update if not already showing this participant
+            if self.primaryVideoView.subviews.first != videoView {
+                // Remove all existing subviews
+                self.primaryVideoView.subviews.forEach { $0.removeFromSuperview() }
+
+                // Add the participant's video view
+                videoView.frame = self.primaryVideoView.bounds
+                videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                self.primaryVideoView.addSubview(videoView)
+
+                print("Updated primary view to show participant: \(participantIdentity)")
+            }
         }
     }
 }
@@ -415,12 +628,12 @@ extension VideoCallViewController: RemoteParticipantDelegate {
 
     func didSubscribeToVideoTrack(videoTrack: RemoteVideoTrack, publication: RemoteVideoTrackPublication, participant: RemoteParticipant) {
         print("Subscribed to video track for participant \(participant.identity)")
-        addRemoteVideoTrack(videoTrack)
+        addRemoteVideoTrack(participant.identity, track: videoTrack)
     }
 
     func didUnsubscribeFromVideoTrack(videoTrack: RemoteVideoTrack, publication: RemoteVideoTrackPublication, participant: RemoteParticipant) {
         print("Unsubscribed from video track for participant \(participant.identity)")
-        removeRemoteVideoTrack(videoTrack)
+        removeRemoteVideoTrack(participant.identity, track: videoTrack)
     }
 
     func didSubscribeToAudioTrack(audioTrack: RemoteAudioTrack, publication: RemoteAudioTrackPublication, participant: RemoteParticipant) {

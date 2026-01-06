@@ -1,8 +1,12 @@
 package com.avinashbhalki.capacitor.twilio.video
 
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.media.AudioManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.widget.FrameLayout
@@ -20,6 +24,15 @@ class VideoCallActivity : AppCompatActivity() {
         fun getInstance(): VideoCallActivity? {
             return instance
         }
+    }
+
+    // Call State Machine
+    enum class CallState {
+        IDLE,            // No active call
+        JOINING,         // joinRoom invoked, not yet connected
+        CONNECTED,       // Room connected
+        DISCONNECTING,   // leaveRoom or auto-close in progress
+        DISCONNECTED     // Call fully ended
     }
 
     // UI Elements
@@ -41,12 +54,19 @@ class VideoCallActivity : AppCompatActivity() {
     private var audioManager: AudioManager? = null
 
     // State
+    private var callState: CallState = CallState.IDLE
     private var isAudioMuted = false
     private var isVideoEnabled = true
     private var isSpeakerEnabled = true
     private var accessToken: String? = null
     private var roomName: String? = null
     private var remoteParticipantCount = 0
+
+    // Multi-participant video management
+    private val participantVideoViews = mutableMapOf<String, VideoView>()
+    private var dominantSpeakerIdentity: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var dominantSpeakerDebounceRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,6 +81,9 @@ class VideoCallActivity : AppCompatActivity() {
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         setupLocalMedia()
+
+        // Transition to JOINING state
+        transitionToState(CallState.JOINING)
         connectToRoom()
     }
 
@@ -150,8 +173,28 @@ class VideoCallActivity : AppCompatActivity() {
                 setMargins(margin, 0, margin, 0)
             }
             contentDescription = text
-            setBackgroundColor(android.graphics.Color.GRAY)
+
+            // Set up stateful background
+            backgroundTintList = createButtonColorStateList()
+            isClickable = true
+            isFocusable = true
         }
+    }
+
+    private fun createButtonColorStateList(): ColorStateList {
+        val states = arrayOf(
+            intArrayOf(-android.R.attr.state_enabled), // Disabled
+            intArrayOf(android.R.attr.state_selected),   // Selected/Active
+            intArrayOf()                                  // Default
+        )
+
+        val colors = intArrayOf(
+            Color.parseColor("#444444"),  // Disabled - dark gray
+            Color.parseColor("#4CAF50"),  // Selected - green
+            Color.parseColor("#888888")   // Default - gray
+        )
+
+        return ColorStateList(states, colors)
     }
 
     private fun setupLocalMedia() {
@@ -191,12 +234,18 @@ class VideoCallActivity : AppCompatActivity() {
             Log.d(TAG, "Connected to room: ${room.name}")
             localParticipant = room.localParticipant
 
+            // Transition to CONNECTED state
+            transitionToState(CallState.CONNECTED)
+
             TwilioVideoPlugin.getInstance()?.notifyRoomConnected(room.name)
 
             // Handle existing participants
             room.remoteParticipants.forEach { participant ->
                 addRemoteParticipant(participant)
             }
+
+            // Update UI to reflect connected state
+            updateButtonStates()
         }
 
         override fun onReconnecting(room: Room, twilioException: TwilioException) {
@@ -209,6 +258,10 @@ class VideoCallActivity : AppCompatActivity() {
 
         override fun onConnectFailure(room: Room, twilioException: TwilioException) {
             Log.e(TAG, "Connect failure: ${twilioException.message}")
+
+            // Transition to DISCONNECTED on failure
+            transitionToState(CallState.DISCONNECTED)
+
             TwilioVideoPlugin.getInstance()?.notifyRoomError(
                 twilioException.code.toString(),
                 twilioException.message ?: "Connection failed",
@@ -219,6 +272,10 @@ class VideoCallActivity : AppCompatActivity() {
 
         override fun onDisconnected(room: Room, twilioException: TwilioException?) {
             Log.d(TAG, "Disconnected from room: ${room.name}")
+
+            // Transition to DISCONNECTED
+            transitionToState(CallState.DISCONNECTED)
+
             TwilioVideoPlugin.getInstance()?.notifyRoomDisconnected(
                 room.name,
                 twilioException?.message
@@ -247,6 +304,16 @@ class VideoCallActivity : AppCompatActivity() {
 
         override fun onDominantSpeakerChanged(room: Room, remoteParticipant: RemoteParticipant?) {
             Log.d(TAG, "Dominant speaker: ${remoteParticipant?.identity}")
+
+            // Debounce dominant speaker changes to avoid flicker
+            dominantSpeakerDebounceRunnable?.let { mainHandler.removeCallbacks(it) }
+
+            dominantSpeakerDebounceRunnable = Runnable {
+                updateDominantSpeaker(remoteParticipant?.identity)
+            }
+
+            mainHandler.postDelayed(dominantSpeakerDebounceRunnable!!, 300)
+
             TwilioVideoPlugin.getInstance()?.notifyDominantSpeakerChanged(remoteParticipant?.identity)
         }
     }
@@ -255,19 +322,41 @@ class VideoCallActivity : AppCompatActivity() {
         remoteParticipantCount++
         participant.setListener(remoteParticipantListener)
 
+        // Create or get stable video view for this participant
+        val videoView = participantVideoViews.getOrPut(participant.identity) {
+            VideoView(this).apply {
+                Log.d(TAG, "Created new VideoView for participant: ${participant.identity}")
+            }
+        }
+
         participant.remoteVideoTracks.forEach { publication ->
             if (publication.isTrackSubscribed) {
-                publication.remoteVideoTrack?.let { addRemoteVideoTrack(it) }
+                publication.remoteVideoTrack?.let { track ->
+                    addRemoteVideoTrack(participant.identity, track)
+                }
             }
         }
     }
 
     private fun removeRemoteParticipant(participant: RemoteParticipant) {
         remoteParticipantCount--
+
         participant.remoteVideoTracks.forEach { publication ->
             if (publication.isTrackSubscribed) {
-                publication.remoteVideoTrack?.let { removeRemoteVideoTrack(it) }
+                publication.remoteVideoTrack?.let { track ->
+                    removeRemoteVideoTrack(participant.identity, track)
+                }
             }
+        }
+
+        // Clean up video view for this participant
+        participantVideoViews.remove(participant.identity)?.let { videoView ->
+            runOnUiThread {
+                if (primaryVideoView.childCount > 0 && primaryVideoView.getChildAt(0) == videoView) {
+                    primaryVideoView.removeAllViews()
+                }
+            }
+            Log.d(TAG, "Removed VideoView for participant: ${participant.identity}")
         }
     }
 
@@ -288,7 +377,7 @@ class VideoCallActivity : AppCompatActivity() {
             track: RemoteVideoTrack
         ) {
             Log.d(TAG, "Video track subscribed: ${participant.identity}")
-            addRemoteVideoTrack(track)
+            addRemoteVideoTrack(participant.identity, track)
         }
 
         override fun onVideoTrackUnsubscribed(
@@ -297,7 +386,7 @@ class VideoCallActivity : AppCompatActivity() {
             track: RemoteVideoTrack
         ) {
             Log.d(TAG, "Video track unsubscribed: ${participant.identity}")
-            removeRemoteVideoTrack(track)
+            removeRemoteVideoTrack(participant.identity, track)
         }
 
         override fun onAudioTrackPublished(
@@ -376,16 +465,67 @@ class VideoCallActivity : AppCompatActivity() {
         }
     }
 
-    private fun addRemoteVideoTrack(track: RemoteVideoTrack) {
+    private fun addRemoteVideoTrack(participantIdentity: String, track: RemoteVideoTrack) {
+        val videoView = participantVideoViews[participantIdentity]
+        if (videoView == null) {
+            Log.w(TAG, "No VideoView found for participant: $participantIdentity")
+            return
+        }
+
         runOnUiThread {
-            primaryVideoView.removeAllViews()
-            track.addSink(primaryVideoView)
+            // Add sink to the stable video view (reuse, don't recreate)
+            track.addSink(videoView)
+
+            // If this is the dominant speaker or first participant, show in primary view
+            if (dominantSpeakerIdentity == participantIdentity || remoteParticipantCount == 1) {
+                updatePrimaryVideoView(participantIdentity)
+            }
+
+            Log.d(TAG, "Added video track sink for participant: $participantIdentity")
         }
     }
 
-    private fun removeRemoteVideoTrack(track: RemoteVideoTrack) {
+    private fun removeRemoteVideoTrack(participantIdentity: String, track: RemoteVideoTrack) {
+        val videoView = participantVideoViews[participantIdentity]
+        if (videoView == null) {
+            Log.w(TAG, "No VideoView found for participant: $participantIdentity")
+            return
+        }
+
         runOnUiThread {
-            track.removeSink(primaryVideoView)
+            track.removeSink(videoView)
+            Log.d(TAG, "Removed video track sink for participant: $participantIdentity")
+        }
+    }
+
+    private fun updateDominantSpeaker(participantIdentity: String?) {
+        dominantSpeakerIdentity = participantIdentity
+
+        if (participantIdentity != null) {
+            updatePrimaryVideoView(participantIdentity)
+        }
+    }
+
+    private fun updatePrimaryVideoView(participantIdentity: String) {
+        val videoView = participantVideoViews[participantIdentity] ?: return
+
+        runOnUiThread {
+            // Only update if not already showing this participant
+            if (primaryVideoView.childCount == 0 || primaryVideoView.getChildAt(0) != videoView) {
+                primaryVideoView.removeAllViews()
+
+                // Remove from parent if it has one
+                (videoView.parent as? FrameLayout)?.removeView(videoView)
+
+                // Add to primary view
+                val layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+                primaryVideoView.addView(videoView, layoutParams)
+
+                Log.d(TAG, "Updated primary view to show participant: $participantIdentity")
+            }
         }
     }
 
@@ -397,7 +537,70 @@ class VideoCallActivity : AppCompatActivity() {
         }
     }
 
+    // ===== Call State Machine =====
+
+    private fun transitionToState(newState: CallState) {
+        val oldState = callState
+
+        // Validate state transition
+        val isValidTransition = when (oldState to newState) {
+            CallState.IDLE to CallState.JOINING -> true
+            CallState.JOINING to CallState.CONNECTED -> true
+            CallState.JOINING to CallState.DISCONNECTED -> true // Failed to connect
+            CallState.CONNECTED to CallState.DISCONNECTING -> true
+            CallState.DISCONNECTING to CallState.DISCONNECTED -> true
+            CallState.CONNECTED to CallState.DISCONNECTED -> true // Abnormal disconnect
+            else -> oldState == newState // Allow same state
+        }
+
+        if (!isValidTransition) {
+            Log.w(TAG, "Invalid state transition: $oldState -> $newState")
+            return
+        }
+
+        Log.d(TAG, "Call state transition: $oldState -> $newState")
+        callState = newState
+
+        // Update UI based on new state
+        runOnUiThread {
+            updateButtonStates()
+        }
+    }
+
+    private fun updateButtonStates() {
+        val isConnected = callState == CallState.CONNECTED
+
+        runOnUiThread {
+            // Mute button
+            muteButton.isEnabled = isConnected
+            muteButton.isSelected = isAudioMuted
+
+            // Video button
+            videoButton.isEnabled = isConnected
+            videoButton.isSelected = !isVideoEnabled
+
+            // Flip button
+            flipButton.isEnabled = isConnected && isVideoEnabled
+
+            // Speaker button
+            speakerButton.isEnabled = isConnected
+            speakerButton.isSelected = isSpeakerEnabled
+
+            // Hangup button - always enabled once joining
+            hangupButton.isEnabled = (callState == CallState.JOINING ||
+                                     callState == CallState.CONNECTED)
+        }
+    }
+
+    // ===== Control Actions =====
+
     fun disconnect() {
+        if (callState == CallState.DISCONNECTING || callState == CallState.DISCONNECTED) {
+            Log.w(TAG, "Already disconnecting or disconnected, ignoring")
+            return
+        }
+
+        transitionToState(CallState.DISCONNECTING)
         room?.disconnect()
         cleanup()
         runOnUiThread {
@@ -406,24 +609,47 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     fun muteAudio(muted: Boolean) {
+        if (callState != CallState.CONNECTED) {
+            Log.w(TAG, "Cannot mute audio, not connected. State: $callState")
+            return
+        }
+
         isAudioMuted = muted
         localAudioTrack?.enable(!muted)
+        updateButtonStates()
     }
 
     fun enableVideo(enabled: Boolean) {
+        if (callState != CallState.CONNECTED) {
+            Log.w(TAG, "Cannot toggle video, not connected. State: $callState")
+            return
+        }
+
         isVideoEnabled = enabled
         localVideoTrack?.enable(enabled)
+        updateButtonStates()
     }
 
     fun flipCamera() {
+        if (callState != CallState.CONNECTED || !isVideoEnabled) {
+            Log.w(TAG, "Cannot flip camera. State: $callState, VideoEnabled: $isVideoEnabled")
+            return
+        }
+
         cameraCapturer?.switchCamera()
     }
 
     fun setSpeaker(enabled: Boolean) {
+        if (callState != CallState.CONNECTED) {
+            Log.w(TAG, "Cannot toggle speaker, not connected. State: $callState")
+            return
+        }
+
         isSpeakerEnabled = enabled
         audioManager?.let {
             it.isSpeakerphoneOn = enabled
         }
+        updateButtonStates()
     }
 
     private fun toggleAudioMute() {
@@ -439,6 +665,10 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun cleanup() {
+        // Cancel any pending dominant speaker updates
+        dominantSpeakerDebounceRunnable?.let { mainHandler.removeCallbacks(it) }
+        dominantSpeakerDebounceRunnable = null
+
         localVideoTrack?.let {
             it.removeSink(thumbnailVideoView)
             it.release()
@@ -451,6 +681,10 @@ class VideoCallActivity : AppCompatActivity() {
         cameraCapturer?.stopCapture()
         cameraCapturer = null
 
+        // Clean up all participant video views
+        participantVideoViews.clear()
+        dominantSpeakerIdentity = null
+
         room = null
         localParticipant = null
     }
@@ -458,6 +692,10 @@ class VideoCallActivity : AppCompatActivity() {
     override fun onDestroy() {
         cleanup()
         instance = null
+
+        // Reset state
+        transitionToState(CallState.DISCONNECTED)
+
         super.onDestroy()
     }
 }

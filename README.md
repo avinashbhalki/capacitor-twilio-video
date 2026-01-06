@@ -7,13 +7,17 @@ A production-ready Capacitor 8 plugin for Twilio Video with custom full-screen U
 - ✅ Custom full-screen video UI (not Twilio's default UI)
 - ✅ Support for Capacitor 8.0.0
 - ✅ Pinned Twilio SDK versions for stability
+- ✅ **Robust call state management** with strict state machine
+- ✅ **Enhanced UI controls** with clear visual state feedback
+- ✅ **Stable multi-participant rendering** (no flicker with 3+ participants)
 - ✅ Auto-close when last participant leaves
 - ✅ Real-time participant events
 - ✅ Network quality monitoring
-- ✅ Dominant speaker detection
-- ✅ Audio/Video mute controls
+- ✅ Dominant speaker detection with debouncing
+- ✅ Audio/Video mute controls with state persistence
 - ✅ Speaker/Earpiece toggle
 - ✅ Camera flip support
+- ✅ **Swift Package Manager (SPM) support** with CocoaPods fallback
 - ✅ Production-ready code with proper resource cleanup
 
 ## Twilio SDK Versions
@@ -22,6 +26,11 @@ This plugin uses **pinned** Twilio SDK versions for stability:
 
 - **Android**: Twilio Video SDK `7.6.1`
 - **iOS**: Twilio Video SDK `5.8.2`
+
+## Documentation
+
+- **[Call State Management & UI Behavior](CALL_STATE_MANAGEMENT.md)** - Detailed guide on call states, button states, and multi-participant rendering
+- **[SPM Setup & Troubleshooting](SPM_SETUP.md)** - Swift Package Manager configuration and common issues
 
 ## Installation
 
@@ -89,6 +98,8 @@ cd ios/App
 pod install
 cd ../..
 ```
+
+**Alternative**: Use Swift Package Manager (SPM) - see [SPM Setup Guide](SPM_SETUP.md)
 
 ### 3. Minimum iOS Version
 
@@ -336,14 +347,49 @@ export class VideoCallService {
 The plugin presents a **custom full-screen video interface** on both platforms:
 
 #### Layout
-- **Primary View**: Remote participant video (full-screen)
+- **Primary View**: Remote participant video (full-screen) - shows dominant speaker
 - **Thumbnail**: Local participant video (picture-in-picture, top-right corner)
-- **Controls**: Bottom bar with buttons for:
-  - Mute/Unmute audio
-  - Enable/Disable video
-  - Flip camera
-  - Toggle speaker
-  - Hang up
+- **Controls**: Bottom bar with state-aware buttons:
+  - 🎤 Mute/Unmute audio (highlighted when muted)
+  - 📹 Enable/Disable video (highlighted when disabled)
+  - 🔄 Flip camera (disabled when video is off)
+  - 🔊 Toggle speaker (highlighted when speaker is on)
+  - 📞 Hang up (always enabled during call)
+
+#### Button State Feedback
+
+All control buttons provide **clear visual state feedback**:
+
+- **Active/Selected**: Green highlight (action is currently active)
+- **Inactive**: Gray (default state)
+- **Disabled**: Dimmed/50% opacity (action unavailable for current call state)
+
+States update immediately and persist across orientation changes and app lifecycle events.
+
+See [Call State Management](CALL_STATE_MANAGEMENT.md) for detailed behavior.
+
+#### Multi-Participant Rendering
+
+**Stable video rendering with 3+ participants:**
+
+- Each participant gets a unique, reusable video renderer
+- Dominant speaker shown in full-screen primary view
+- Smooth transitions with debouncing (300ms) to prevent flicker
+- No video view recreation - renderers are reused for performance
+- Participant identity correctly mapped to video tracks
+
+#### Call State Machine
+
+The plugin enforces a strict state machine:
+
+```
+IDLE → JOINING → CONNECTED → DISCONNECTING → DISCONNECTED
+```
+
+- **Media controls** only work when state is `CONNECTED`
+- **Invalid transitions** are rejected with warning logs
+- **State events** emitted at each transition
+- See [Call State Management](CALL_STATE_MANAGEMENT.md) for full details
 
 #### Auto-Close Behavior
 
@@ -455,6 +501,10 @@ Cleanup includes:
 - Verify RECORD_AUDIO and MODIFY_AUDIO_SETTINGS permissions
 - Check that no other app is using the audio device
 
+**Video flickering with multiple participants:**
+- This has been fixed in the latest version
+- Ensure you're using stable participant-to-renderer mapping
+
 ### iOS
 
 **Black screen:**
@@ -464,6 +514,27 @@ Cleanup includes:
 **CocoaPods errors:**
 - Run `pod install` in `ios/App` directory
 - Try `pod repo update` if dependency resolution fails
+- See [SPM Setup Guide](SPM_SETUP.md) for Swift Package Manager alternative
+
+**Swift Package Manager issues:**
+- See comprehensive guide: [SPM Setup & Troubleshooting](SPM_SETUP.md)
+- Common issues: missing module, linker errors, version conflicts
+
+**Button states not updating:**
+- This has been fixed - buttons now reflect actual call state
+- Check console logs for state transition messages
+
+### General
+
+**Call state issues:**
+- Enable verbose logging to see state transitions
+- See [Call State Management](CALL_STATE_MANAGEMENT.md) for debugging
+- Check that you're not calling methods before room is connected
+
+**Performance:**
+- Multi-participant rendering is optimized for 3+ participants
+- Dominant speaker changes are debounced (300ms)
+- Video renderers are reused, never recreated
 
 ## Contributing
 

@@ -623,9 +623,23 @@ class VideoCallActivity : AppCompatActivity() {
             setOnClickListener {
                 onThumbnailSelected(identity)
             }
+
+            // 🔥 CRITICAL: Force TextureView rendering to prevent black screens
+            setMirror(false)
+            setScalingType(com.twilio.video.VideoView.ScalingType.ASPECT_FIT)
+
+            // Force TextureView usage internally (prevents SurfaceView issues)
+            try {
+                val enableSurfaceViewField = VideoView::class.java.getDeclaredField("enableSurfaceView")
+                enableSurfaceViewField.isAccessible = true
+                enableSurfaceViewField.setBoolean(this, false) // Force TextureView
+                Log.d(TAG, "🎯 Forced TextureView mode for: $identity")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not force TextureView mode: ${e.message}")
+            }
         }
 
-        Log.d(TAG, "Created VideoView for participant: $identity")
+        Log.d(TAG, "📹 Created TextureView-backed renderer for participant: $identity (hash: ${videoView.hashCode()})")
         return ParticipantRenderer(identity, videoView, null, false)
     }
 
@@ -888,15 +902,24 @@ class VideoCallActivity : AppCompatActivity() {
 
             Log.d(TAG, "✓ Added video track to participant: $participantIdentity (focused: ${updatedRenderer.isFocused})")
         }
+    }
+
+    private fun removeRemoteVideoTrack(participantIdentity: String, track: RemoteVideoTrack) {
+        val renderer = participantRenderers[participantIdentity]
+        if (renderer == null) {
+            Log.w(TAG, "No renderer found for participant: $participantIdentity")
+            return
+        }
 
         runOnUiThread {
+            // Remove track from video view
             track.removeSink(renderer.videoView)
 
             // Clear track reference
             val updatedRenderer = renderer.copy(videoTrack = null)
             participantRenderers[participantIdentity] = updatedRenderer
 
-            Log.d(TAG, "Removed video track from participant: $participantIdentity")
+            Log.d(TAG, "✓ Removed video track from participant: $participantIdentity")
         }
     }
 

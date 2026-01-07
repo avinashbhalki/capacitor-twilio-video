@@ -830,12 +830,25 @@ extension VideoCallViewController {
                 self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
 
                 // Critical: NEVER recreate VideoView - create temporary view for local
-                let primaryLocalView = VideoView(frame: self.primaryVideoContainer.bounds)
+                let primaryLocalView = VideoView(frame: .zero)
                 primaryLocalView.contentMode = .scaleAspectFill
-                primaryLocalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                self.localVideoTrack?.addRenderer(primaryLocalView)
+                primaryLocalView.translatesAutoresizingMaskIntoConstraints = false
                 self.primaryVideoContainer.addSubview(primaryLocalView)
-                print("✅ Focused local video in primary")
+
+                // Apply FULL AutoLayout constraints
+                NSLayoutConstraint.activate([
+                    primaryLocalView.leadingAnchor.constraint(equalTo: self.primaryVideoContainer.leadingAnchor),
+                    primaryLocalView.trailingAnchor.constraint(equalTo: self.primaryVideoContainer.trailingAnchor),
+                    primaryLocalView.topAnchor.constraint(equalTo: self.primaryVideoContainer.topAnchor),
+                    primaryLocalView.bottomAnchor.constraint(equalTo: self.primaryVideoContainer.bottomAnchor)
+                ])
+
+                // Force layout pass IMMEDIATELY
+                self.primaryVideoContainer.layoutIfNeeded()
+                primaryLocalView.layoutIfNeeded()
+
+                self.localVideoTrack?.addRenderer(primaryLocalView)
+                print("✅ Focused local video in primary (frame: \(primaryLocalView.frame))")
             } else if var newRenderer = self.participantRenderers[newIdentity] {
                 newRenderer.isFocused = true
                 self.participantRenderers[newIdentity] = newRenderer
@@ -847,10 +860,23 @@ extension VideoCallViewController {
 
                 // Ensure primary is clear and add the SAME VideoView
                 self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
-                newRenderer.videoView.frame = self.primaryVideoContainer.bounds
-                newRenderer.videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+
+                // Apply proper AutoLayout constraints (MANDATORY for TVIVideoView)
+                newRenderer.videoView.translatesAutoresizingMaskIntoConstraints = false
                 self.primaryVideoContainer.addSubview(newRenderer.videoView)
-                print("✅ Moved \(newIdentity) from thumbnail to primary (renderer reused)")
+
+                NSLayoutConstraint.activate([
+                    newRenderer.videoView.leadingAnchor.constraint(equalTo: self.primaryVideoContainer.leadingAnchor),
+                    newRenderer.videoView.trailingAnchor.constraint(equalTo: self.primaryVideoContainer.trailingAnchor),
+                    newRenderer.videoView.topAnchor.constraint(equalTo: self.primaryVideoContainer.topAnchor),
+                    newRenderer.videoView.bottomAnchor.constraint(equalTo: self.primaryVideoContainer.bottomAnchor)
+                ])
+
+                // Force layout pass IMMEDIATELY (critical for TVIVideoView rendering)
+                self.primaryVideoContainer.layoutIfNeeded()
+                newRenderer.videoView.layoutIfNeeded()
+
+                print("✅ Moved \(newIdentity) from thumbnail to primary (renderer reused, frame: \(newRenderer.videoView.frame))")
             }
         }
     }
@@ -897,10 +923,23 @@ extension VideoCallViewController {
                     // Critical: Remove from current superview BEFORE adding to new parent
                     renderer.videoView.removeFromSuperview()
                     self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
-                    renderer.videoView.frame = self.primaryVideoContainer.bounds
-                    renderer.videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+
+                    // Apply proper AutoLayout constraints (MANDATORY for TVIVideoView)
+                    renderer.videoView.translatesAutoresizingMaskIntoConstraints = false
                     self.primaryVideoContainer.addSubview(renderer.videoView)
-                    print("✅ Moved focused renderer to primary container: \(participantIdentity)")
+
+                    NSLayoutConstraint.activate([
+                        renderer.videoView.leadingAnchor.constraint(equalTo: self.primaryVideoContainer.leadingAnchor),
+                        renderer.videoView.trailingAnchor.constraint(equalTo: self.primaryVideoContainer.trailingAnchor),
+                        renderer.videoView.topAnchor.constraint(equalTo: self.primaryVideoContainer.topAnchor),
+                        renderer.videoView.bottomAnchor.constraint(equalTo: self.primaryVideoContainer.bottomAnchor)
+                    ])
+
+                    // Force layout pass IMMEDIATELY
+                    self.primaryVideoContainer.layoutIfNeeded()
+                    renderer.videoView.layoutIfNeeded()
+
+                    print("✅ Moved focused renderer to primary container: \(participantIdentity) (frame: \(renderer.videoView.frame))")
                 }
             } else {
                 // Should be in thumbnail grid

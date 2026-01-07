@@ -195,11 +195,20 @@ class VideoCallActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
         }
 
-        muteButton = createControlButton("🎤")
-        videoButton = createControlButton("📹")
-        flipButton = createControlButton("🔄")
-        speakerButton = createControlButton("🔊")
-        hangupButton = createControlButton("📞").apply {
+        muteButton = createControlButton("Mute").apply {
+            setImageResource(android.R.drawable.ic_btn_speak_now)
+        }
+        videoButton = createControlButton("Video").apply {
+            setImageResource(android.R.drawable.presence_video_online)
+        }
+        flipButton = createControlButton("Flip").apply {
+            setImageResource(android.R.drawable.ic_menu_rotate)
+        }
+        speakerButton = createControlButton("Speaker").apply {
+            setImageResource(android.R.drawable.ic_lock_silent_mode_off)
+        }
+        hangupButton = createControlButton("Hangup").apply {
+            setImageResource(android.R.drawable.ic_menu_call)
             backgroundTintList = ColorStateList.valueOf(Color.RED)
         }
 
@@ -632,7 +641,7 @@ class VideoCallActivity : AppCompatActivity() {
 
         val oldIdentity = focusedParticipantIdentity
 
-        Log.d(TAG, "Switching focus from $oldIdentity to $newIdentity (userSelection: $isUserSelection)")
+        Log.d(TAG, "🔄 Switching focus from $oldIdentity to $newIdentity (userSelection: $isUserSelection)")
 
         userHasSelectedParticipant = isUserSelection
         focusedParticipantIdentity = newIdentity
@@ -641,16 +650,25 @@ class VideoCallActivity : AppCompatActivity() {
             // Move old focused participant to thumbnail grid
             oldIdentity?.let { oldId ->
                 if (oldId == "local") {
-                    // Local was focused, move back to thumbnail
-                    // Already in thumbnail, just update flag
+                    // Local was focused - remove any duplicate local views from primary
+                    primaryVideoContainer.removeAllViews()
                 } else {
                     participantRenderers[oldId]?.let { oldRenderer ->
-                        oldRenderer.isFocused = false
-                        primaryVideoContainer.removeView(oldRenderer.videoView)
+                        val updatedOldRenderer = oldRenderer.copy(isFocused = false)
+                        participantRenderers[oldId] = updatedOldRenderer
 
-                        // Add back to thumbnail grid
-                        if (oldRenderer.videoView.parent == null) {
+                        // Critical: Safely move VideoView without recreating
+                        if (oldRenderer.videoView.parent == primaryVideoContainer) {
+                            primaryVideoContainer.removeView(oldRenderer.videoView)
+
+                            // Restore thumbnail layout params and add to grid
+                            val thumbnailSize = (120 * resources.displayMetrics.density).toInt()
+                            val thumbnailMargin = (8 * resources.displayMetrics.density).toInt()
+                            oldRenderer.videoView.layoutParams = LinearLayout.LayoutParams(thumbnailSize, thumbnailSize).apply {
+                                setMargins(0, 0, 0, thumbnailMargin)
+                            }
                             thumbnailGridContainer.addView(oldRenderer.videoView)
+                            Log.d(TAG, "✓ Moved $oldId from primary to thumbnail")
                         }
                     }
                 }
@@ -660,8 +678,8 @@ class VideoCallActivity : AppCompatActivity() {
             if (newIdentity == "local") {
                 // Show local video in primary (rare case)
                 primaryVideoContainer.removeAllViews()
-                // Create a new view for primary display to avoid moving the thumbnail
-                val primaryLocalView = VideoView(this).apply {
+                // Critical: NEVER recreate VideoView - create temporary view for local
+                val primaryLocalView = VideoView(this@VideoCallActivity).apply {
                     layoutParams = FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT
@@ -669,27 +687,25 @@ class VideoCallActivity : AppCompatActivity() {
                 }
                 localVideoTrack?.addSink(primaryLocalView)
                 primaryVideoContainer.addView(primaryLocalView)
+                Log.d(TAG, "✓ Focused local video in primary")
             } else {
                 participantRenderers[newIdentity]?.let { newRenderer ->
-                    newRenderer.isFocused = true
+                    val updatedNewRenderer = newRenderer.copy(isFocused = true)
+                    participantRenderers[newIdentity] = updatedNewRenderer
 
-                    // Remove from thumbnail grid
-                    thumbnailGridContainer.removeView(newRenderer.videoView)
+                    // Critical: Safely move existing VideoView (NEVER recreate)
+                    if (newRenderer.videoView.parent == thumbnailGridContainer) {
+                        thumbnailGridContainer.removeView(newRenderer.videoView)
+                    }
 
-                    // Add to primary container
+                    // Ensure primary is clear and add the SAME VideoView
                     primaryVideoContainer.removeAllViews()
                     newRenderer.videoView.layoutParams = FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT
                     )
                     primaryVideoContainer.addView(newRenderer.videoView)
-                }
-            }
-        }
-    }
-
-    private fun selectNewFocusedParticipant() {
-        // Priority: Dominant speaker > First available participant > Local
+                    Log.d(TAG, "✓ Moved $newIdentity from thumbnail to primary (renderer reused)")
         val newFocus = when {
             dominantSpeakerIdentity != null && participantRenderers.containsKey(dominantSpeakerIdentity) -> {
                 dominantSpeakerIdentity!!
@@ -721,8 +737,17 @@ class VideoCallActivity : AppCompatActivity() {
             publication: RemoteVideoTrackPublication,
             track: RemoteVideoTrack
         ) {
-            Log.d(TAG, "Video track subscribed: ${participant.identity}")
-            addRemoteVideoTrack(participant.identity, track)
+            Log.d(TAG, "🎥 Video track subscribed: ${participant.identity}")
+            // Critical: Only add track if participant renderer exists and track not already attached
+            participantRenderers[participant.identity]?.let { renderer ->
+                if (renderer.videoTrack == null) {
+                    addRemoteVideoTrack(participant.identity, track)
+                } else {
+                    Log.w(TAG, "⚠️ Track already attached to ${participant.identity}, skipping")
+                }
+            } ?: run {
+                Log.w(TAG, "⚠️ No renderer found for ${participant.identity}")
+            }
         }
 
         override fun onVideoTrackUnsubscribed(
@@ -818,8 +843,15 @@ class VideoCallActivity : AppCompatActivity() {
         }
 
         runOnUiThread {
-            // Attach track to the stable video view
+            // Critical: Check if track already attached to prevent duplicate binding
+            if (renderer.videoTrack != null) {
+                Log.w(TAG, "Track already attached to participant: $participantIdentity")
+                return@runOnUiThread
+            }
+
+            // Attach track to the stable video view - ONLY ONCE
             track.addSink(renderer.videoView)
+            Log.d(TAG, "✓ Track attached to renderer for: $participantIdentity")
 
             // Update renderer's track reference
             val updatedRenderer = renderer.copy(videoTrack = track)
@@ -829,35 +861,32 @@ class VideoCallActivity : AppCompatActivity() {
             if (updatedRenderer.isFocused) {
                 // Should be in primary container
                 if (renderer.videoView.parent != primaryVideoContainer) {
-                    thumbnailGridContainer.removeView(renderer.videoView)
+                    // Critical: Remove from current parent BEFORE adding to new parent
+                    (renderer.videoView.parent as? ViewGroup)?.removeView(renderer.videoView)
                     primaryVideoContainer.removeAllViews()
                     renderer.videoView.layoutParams = FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT
                     )
                     primaryVideoContainer.addView(renderer.videoView)
+                    Log.d(TAG, "✓ Moved focused renderer to primary container: $participantIdentity")
                 }
             } else {
                 // Should be in thumbnail grid
                 if (renderer.videoView.parent != thumbnailGridContainer) {
+                    // Critical: Remove from current parent BEFORE adding to new parent
+                    (renderer.videoView.parent as? ViewGroup)?.removeView(renderer.videoView)
                     val thumbnailSize = (120 * resources.displayMetrics.density).toInt()
                     val thumbnailMargin = (8 * resources.displayMetrics.density).toInt()
                     renderer.videoView.layoutParams = LinearLayout.LayoutParams(thumbnailSize, thumbnailSize).apply {
                         setMargins(0, 0, 0, thumbnailMargin)
                     }
                     thumbnailGridContainer.addView(renderer.videoView)
+                    Log.d(TAG, "✓ Moved renderer to thumbnail grid: $participantIdentity")
                 }
             }
 
-            Log.d(TAG, "Added video track to participant: $participantIdentity (focused: ${updatedRenderer.isFocused})")
-        }
-    }
-
-    private fun removeRemoteVideoTrack(participantIdentity: String, track: RemoteVideoTrack) {
-        val renderer = participantRenderers[participantIdentity]
-        if (renderer == null) {
-            Log.w(TAG, "No renderer found for participant: $participantIdentity")
-            return
+            Log.d(TAG, "✓ Added video track to participant: $participantIdentity (focused: ${updatedRenderer.isFocused})")
         }
 
         runOnUiThread {

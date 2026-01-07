@@ -160,19 +160,27 @@ class VideoCallViewController: UIViewController {
             stackView.trailingAnchor.constraint(lessThanOrEqualTo: controlsContainer.trailingAnchor, constant: -16)
         ])
 
-        muteButton = createControlButton(title: "🎤")
+        muteButton = createControlButton(title: "Mute")
+        muteButton.setImage(UIImage(systemName: "mic.fill"), for: .normal)
+        muteButton.setImage(UIImage(systemName: "mic.slash.fill"), for: .selected)
         muteButton.addTarget(self, action: #selector(toggleAudioMute), for: .touchUpInside)
 
-        videoButton = createControlButton(title: "📹")
+        videoButton = createControlButton(title: "Video")
+        videoButton.setImage(UIImage(systemName: "video.fill"), for: .normal)
+        videoButton.setImage(UIImage(systemName: "video.slash.fill"), for: .selected)
         videoButton.addTarget(self, action: #selector(toggleVideo), for: .touchUpInside)
 
-        flipButton = createControlButton(title: "🔄")
+        flipButton = createControlButton(title: "Flip")
+        flipButton.setImage(UIImage(systemName: "arrow.triangle.2.circlepath.camera.fill"), for: .normal)
         flipButton.addTarget(self, action: #selector(flipCamera), for: .touchUpInside)
 
-        speakerButton = createControlButton(title: "🔊")
+        speakerButton = createControlButton(title: "Speaker")
+        speakerButton.setImage(UIImage(systemName: "speaker.wave.3.fill"), for: .normal)
+        speakerButton.setImage(UIImage(systemName: "speaker.fill"), for: .selected)
         speakerButton.addTarget(self, action: #selector(toggleSpeaker), for: .touchUpInside)
 
-        hangupButton = createControlButton(title: "📞")
+        hangupButton = createControlButton(title: "Hangup")
+        hangupButton.setImage(UIImage(systemName: "phone.down.fill"), for: .normal)
         hangupButton.backgroundColor = .systemRed
         hangupButton.addTarget(self, action: #selector(disconnect), for: .touchUpInside)
 
@@ -185,10 +193,11 @@ class VideoCallViewController: UIViewController {
 
     private func createControlButton(title: String) -> UIButton {
         let button = UIButton(type: .system)
-        button.setTitle(title, for: .normal)
+        button.setTitle("", for: .normal) // Clear title, use icons only
         button.titleLabel?.font = UIFont.systemFont(ofSize: 24)
         button.layer.cornerRadius = 24
         button.translatesAutoresizingMaskIntoConstraints = false
+        button.tintColor = .white
 
         // Set up stateful colors - use configurationUpdateHandler for proper state handling
         button.backgroundColor = .systemGray
@@ -202,18 +211,17 @@ class VideoCallViewController: UIViewController {
 
         // Add configuration update handler for better visual feedback
         button.configurationUpdateHandler = { btn in
-            var config = UIButton.Configuration.plain()
-
             if !btn.isEnabled {
                 btn.backgroundColor = UIColor.systemGray.withAlphaComponent(0.3)
+                btn.tintColor = .lightGray
                 btn.alpha = 0.5
             } else if btn.isSelected {
                 btn.backgroundColor = .systemGreen
+                btn.tintColor = .white
                 btn.alpha = 1.0
             } else {
                 btn.backgroundColor = .systemGray
-                btn.alpha = 1.0
-            }
+                btn.tintColor = .white
         }
 
         return button
@@ -787,7 +795,7 @@ extension VideoCallViewController {
 
         let oldIdentity = focusedParticipantIdentity
 
-        print("Switching focus from \(oldIdentity ?? "nil") to \(newIdentity) (userSelection: \(isUserSelection))")
+        print("🔄 Switching focus from \(oldIdentity ?? "nil") to \(newIdentity) (userSelection: \(isUserSelection))")
 
         userHasSelectedParticipant = isUserSelection
         focusedParticipantIdentity = newIdentity
@@ -796,17 +804,23 @@ extension VideoCallViewController {
             // Move old focused participant to thumbnail grid
             if let oldId = oldIdentity {
                 if oldId == "local" {
-                    // Local was focused, it's already in thumbnail
+                    // Local was focused - remove any duplicate local views from primary
+                    self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
                 } else if var oldRenderer = self.participantRenderers[oldId] {
                     oldRenderer.isFocused = false
                     self.participantRenderers[oldId] = oldRenderer
-                    oldRenderer.videoView.removeFromSuperview()
 
-                    // Add back to thumbnail grid
-                    self.thumbnailGridContainer.addArrangedSubview(oldRenderer.videoView)
-                    NSLayoutConstraint.activate([
-                        oldRenderer.videoView.heightAnchor.constraint(equalToConstant: 120)
-                    ])
+                    // Critical: Safely move TVIVideoView without recreating
+                    if oldRenderer.videoView.superview == self.primaryVideoContainer {
+                        oldRenderer.videoView.removeFromSuperview()
+
+                        // Add back to thumbnail grid with proper constraints
+                        self.thumbnailGridContainer.addArrangedSubview(oldRenderer.videoView)
+                        NSLayoutConstraint.activate([
+                            oldRenderer.videoView.heightAnchor.constraint(equalToConstant: 120)
+                        ])
+                        print("✅ Moved \(oldId) from primary to thumbnail")
+                    }
                 }
             }
 
@@ -815,24 +829,28 @@ extension VideoCallViewController {
                 // Show local video in primary (rare case)
                 self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
 
-                // Create a new view for primary display to avoid moving the thumbnail
+                // Critical: NEVER recreate VideoView - create temporary view for local
                 let primaryLocalView = VideoView(frame: self.primaryVideoContainer.bounds)
                 primaryLocalView.contentMode = .scaleAspectFill
                 primaryLocalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                 self.localVideoTrack?.addRenderer(primaryLocalView)
                 self.primaryVideoContainer.addSubview(primaryLocalView)
+                print("✅ Focused local video in primary")
             } else if var newRenderer = self.participantRenderers[newIdentity] {
                 newRenderer.isFocused = true
                 self.participantRenderers[newIdentity] = newRenderer
 
-                // Remove from thumbnail grid
-                newRenderer.videoView.removeFromSuperview()
+                // Critical: Safely move existing TVIVideoView (NEVER recreate)
+                if newRenderer.videoView.superview == self.thumbnailGridContainer {
+                    newRenderer.videoView.removeFromSuperview()
+                }
 
-                // Add to primary container
+                // Ensure primary is clear and add the SAME VideoView
                 self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
                 newRenderer.videoView.frame = self.primaryVideoContainer.bounds
                 newRenderer.videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                 self.primaryVideoContainer.addSubview(newRenderer.videoView)
+                print("✅ Moved \(newIdentity) from thumbnail to primary (renderer reused)")
             }
         }
     }
@@ -853,13 +871,20 @@ extension VideoCallViewController {
 
     private func addRemoteVideoTrack(_ participantIdentity: String, track: RemoteVideoTrack) {
         guard var renderer = participantRenderers[participantIdentity] else {
-            print("No renderer found for participant: \(participantIdentity)")
+            print("❌ No renderer found for participant: \(participantIdentity)")
             return
         }
 
         DispatchQueue.main.async {
-            // Attach track to the stable video view
+            // Critical: Check if track already attached to prevent duplicate binding
+            if renderer.videoTrack != nil {
+                print("⚠️ Track already attached to participant: \(participantIdentity)")
+                return
+            }
+
+            // Attach track to the stable video view - ONLY ONCE
             track.addRenderer(renderer.videoView)
+            print("✅ Track attached to renderer for: \(participantIdentity)")
 
             // Update renderer's track reference
             renderer.videoTrack = track
@@ -869,24 +894,28 @@ extension VideoCallViewController {
             if renderer.isFocused {
                 // Should be in primary container
                 if renderer.videoView.superview != self.primaryVideoContainer {
+                    // Critical: Remove from current superview BEFORE adding to new parent
                     renderer.videoView.removeFromSuperview()
                     self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
                     renderer.videoView.frame = self.primaryVideoContainer.bounds
                     renderer.videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                     self.primaryVideoContainer.addSubview(renderer.videoView)
+                    print("✅ Moved focused renderer to primary container: \(participantIdentity)")
                 }
             } else {
                 // Should be in thumbnail grid
                 if renderer.videoView.superview != self.thumbnailGridContainer {
+                    // Critical: Remove from current superview BEFORE adding to new parent
                     renderer.videoView.removeFromSuperview()
                     self.thumbnailGridContainer.addArrangedSubview(renderer.videoView)
                     NSLayoutConstraint.activate([
                         renderer.videoView.heightAnchor.constraint(equalToConstant: 120)
                     ])
+                    print("✅ Moved renderer to thumbnail grid: \(participantIdentity)")
                 }
             }
 
-            print("Added video track to participant: \(participantIdentity) (focused: \(renderer.isFocused))")
+            print("✅ Added video track to participant: \(participantIdentity) (focused: \(renderer.isFocused))")
         }
     }
 
@@ -937,8 +966,17 @@ extension VideoCallViewController: RemoteParticipantDelegate {
     }
 
     func didSubscribeToVideoTrack(videoTrack: RemoteVideoTrack, publication: RemoteVideoTrackPublication, participant: RemoteParticipant) {
-        print("Subscribed to video track for participant \(participant.identity)")
-        addRemoteVideoTrack(participant.identity, track: videoTrack)
+        print("🎥 Subscribed to video track for participant \(participant.identity)")
+        // Critical: Only add track if participant renderer exists and track not already attached
+        if let renderer = participantRenderers[participant.identity] {
+            if renderer.videoTrack == nil {
+                addRemoteVideoTrack(participant.identity, track: videoTrack)
+            } else {
+                print("⚠️ Track already attached to \(participant.identity), skipping")
+            }
+        } else {
+            print("⚠️ No renderer found for \(participant.identity)")
+        }
     }
 
     func didUnsubscribeFromVideoTrack(videoTrack: RemoteVideoTrack, publication: RemoteVideoTrackPublication, participant: RemoteParticipant) {

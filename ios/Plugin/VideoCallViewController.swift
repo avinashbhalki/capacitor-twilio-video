@@ -13,6 +13,22 @@ class VideoCallViewController: UIViewController {
         case disconnected    // Call fully ended
     }
 
+    // MARK: - Audio Routing State
+    enum AudioRoute {
+        case bluetooth
+        case wiredHeadset
+        case speaker
+        case earpiece
+    }
+
+    // MARK: - Participant Renderer
+    struct ParticipantRenderer {
+        let identity: String
+        let videoView: VideoView
+        var videoTrack: RemoteVideoTrack?
+        var isFocused: Bool
+    }
+
     // MARK: - Properties
     var accessToken: String?
     var roomName: String?
@@ -28,8 +44,9 @@ class VideoCallViewController: UIViewController {
     private var callState: CallState = .idle
 
     // UI Elements
-    private var primaryVideoView: VideoView!
-    private var thumbnailVideoView: VideoView!
+    private var primaryVideoContainer: UIView!
+    private var thumbnailGridContainer: UIStackView!
+    private var localThumbnailView: VideoView!
     private var controlsContainer: UIView!
     private var muteButton: UIButton!
     private var videoButton: UIButton!
@@ -40,11 +57,14 @@ class VideoCallViewController: UIViewController {
     // State
     private var isAudioMuted = false
     private var isVideoEnabled = true
-    private var isSpeakerEnabled = true
+    private var currentAudioRoute: AudioRoute = .speaker
+    private var preferredAudioRoute: AudioRoute = .speaker
 
-    // Multi-participant video management
-    private var participantVideoViews: [String: VideoView] = [:]
+    // Participant Rendering Manager
+    private var participantRenderers: [String: ParticipantRenderer] = [:]
+    private var focusedParticipantIdentity: String? // User-selected or dominant speaker
     private var dominantSpeakerIdentity: String?
+    private var userHasSelectedParticipant = false // User selection overrides dominant speaker
     private var dominantSpeakerDebounceTimer: Timer?
 
     // MARK: - Lifecycle
@@ -52,6 +72,7 @@ class VideoCallViewController: UIViewController {
         super.viewDidLoad()
 
         setupFullScreenUI()
+        setupAudioSession()
         setupLocalMedia()
 
         // Transition to joining state
@@ -63,25 +84,45 @@ class VideoCallViewController: UIViewController {
     private func setupFullScreenUI() {
         view.backgroundColor = .black
 
-        // Primary video view (remote participant - full screen)
-        primaryVideoView = VideoView(frame: view.bounds)
-        primaryVideoView.contentMode = .scaleAspectFill
-        primaryVideoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(primaryVideoView)
+        // Primary video container (remote participant - full screen)
+        primaryVideoContainer = UIView(frame: view.bounds)
+        primaryVideoContainer.backgroundColor = .black
+        primaryVideoContainer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(primaryVideoContainer)
 
-        // Thumbnail video view (local participant - picture-in-picture)
-        let thumbnailSize: CGFloat = 120
-        let thumbnailFrame = CGRect(x: view.bounds.width - thumbnailSize - 16,
-                                   y: 50,
-                                   width: thumbnailSize,
-                                   height: thumbnailSize)
-        thumbnailVideoView = VideoView(frame: thumbnailFrame)
-        thumbnailVideoView.contentMode = .scaleAspectFill
-        thumbnailVideoView.backgroundColor = .darkGray
-        thumbnailVideoView.layer.cornerRadius = 8
-        thumbnailVideoView.clipsToBounds = true
-        thumbnailVideoView.autoresizingMask = [.flexibleLeftMargin, .flexibleBottomMargin]
-        view.addSubview(thumbnailVideoView)
+        // Thumbnail grid container (top-right, overlays primary video)
+        thumbnailGridContainer = UIStackView()
+        thumbnailGridContainer.axis = .vertical
+        thumbnailGridContainer.distribution = .equalSpacing
+        thumbnailGridContainer.alignment = .fill
+        thumbnailGridContainer.spacing = 8
+        thumbnailGridContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(thumbnailGridContainer)
+
+        NSLayoutConstraint.activate([
+            thumbnailGridContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+            thumbnailGridContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            thumbnailGridContainer.widthAnchor.constraint(equalToConstant: 120)
+        ])
+
+        // Local video thumbnail (always at top of grid)
+        localThumbnailView = VideoView(frame: .zero)
+        localThumbnailView.contentMode = .scaleAspectFill
+        localThumbnailView.backgroundColor = .darkGray
+        localThumbnailView.layer.cornerRadius = 8
+        localThumbnailView.clipsToBounds = true
+        localThumbnailView.translatesAutoresizingMaskIntoConstraints = false
+
+        // Make clickable to select local video as focused
+        let localTapGesture = UITapGestureRecognizer(target: self, action: #selector(localThumbnailTapped))
+        localThumbnailView.addGestureRecognizer(localTapGesture)
+        localThumbnailView.isUserInteractionEnabled = true
+
+        thumbnailGridContainer.addArrangedSubview(localThumbnailView)
+
+        NSLayoutConstraint.activate([
+            localThumbnailView.heightAnchor.constraint(equalToConstant: 120)
+        ])
 
         // Controls container at bottom
         controlsContainer = UIView()
@@ -97,6 +138,10 @@ class VideoCallViewController: UIViewController {
         ])
 
         setupControls()
+    }
+
+    @objc private func localThumbnailTapped() {
+        onThumbnailSelected("local")
     }
 
     private func setupControls() {
@@ -145,7 +190,7 @@ class VideoCallViewController: UIViewController {
         button.layer.cornerRadius = 24
         button.translatesAutoresizingMaskIntoConstraints = false
 
-        // Set up stateful colors
+        // Set up stateful colors - use configurationUpdateHandler for proper state handling
         button.backgroundColor = .systemGray
         button.setTitleColor(.white, for: .normal)
         button.setTitleColor(.lightGray, for: .disabled)
@@ -155,7 +200,114 @@ class VideoCallViewController: UIViewController {
             button.heightAnchor.constraint(equalToConstant: 48)
         ])
 
+        // Add configuration update handler for better visual feedback
+        button.configurationUpdateHandler = { btn in
+            var config = UIButton.Configuration.plain()
+
+            if !btn.isEnabled {
+                btn.backgroundColor = UIColor.systemGray.withAlphaComponent(0.3)
+                btn.alpha = 0.5
+            } else if btn.isSelected {
+                btn.backgroundColor = .systemGreen
+                btn.alpha = 1.0
+            } else {
+                btn.backgroundColor = .systemGray
+                btn.alpha = 1.0
+            }
+        }
+
         return button
+    }
+
+    // MARK: - Audio Session Setup
+    private func setupAudioSession() {
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            // Configure for video chat with Bluetooth support
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .videoChat,
+                options: [.allowBluetooth, .allowBluetoothA2DP]
+            )
+            try audioSession.setActive(true)
+
+            // Default to speaker
+            try audioSession.overrideOutputAudioPort(.speaker)
+            currentAudioRoute = .speaker
+            preferredAudioRoute = .speaker
+
+            // Observe audio route changes
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleRouteChange),
+                name: AVAudioSession.routeChangeNotification,
+                object: audioSession
+            )
+
+            print("Audio session configured successfully")
+        } catch {
+            print("Failed to configure audio session: \(error.localizedDescription)")
+        }
+    }
+
+    @objc private func handleRouteChange(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+
+        switch reason {
+        case .newDeviceAvailable:
+            // New device connected (e.g., Bluetooth headset)
+            updateAudioRouting()
+        case .oldDeviceUnavailable:
+            // Device disconnected (e.g., Bluetooth headset unplugged)
+            updateAudioRouting()
+        default:
+            break
+        }
+    }
+
+    private func updateAudioRouting() {
+        let audioSession = AVAudioSession.sharedInstance()
+
+        // Detect available routes
+        let currentRoute = audioSession.currentRoute
+        let hasBluetoothRoute = currentRoute.outputs.contains { output in
+            output.portType == .bluetoothA2DP || output.portType == .bluetoothHFP || output.portType == .bluetoothLE
+        }
+        let hasWiredHeadset = currentRoute.outputs.contains { output in
+            output.portType == .headphones || output.portType == .headsetMic
+        }
+
+        do {
+            // Priority: Bluetooth > Wired Headset > Preferred (Speaker/Earpiece)
+            if hasBluetoothRoute {
+                // Bluetooth has highest priority - don't override
+                currentAudioRoute = .bluetooth
+                print("Audio routed to Bluetooth")
+            } else if hasWiredHeadset {
+                // Wired headset second priority
+                try audioSession.overrideOutputAudioPort(.none)
+                currentAudioRoute = .wiredHeadset
+                print("Audio routed to Wired Headset")
+            } else if preferredAudioRoute == .speaker {
+                // User prefers speaker
+                try audioSession.overrideOutputAudioPort(.speaker)
+                currentAudioRoute = .speaker
+                print("Audio routed to Speaker")
+            } else {
+                // Default to earpiece
+                try audioSession.overrideOutputAudioPort(.none)
+                currentAudioRoute = .earpiece
+                print("Audio routed to Earpiece")
+            }
+
+            updateButtonStates()
+        } catch {
+            print("Failed to update audio routing: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Local Media Setup
@@ -169,7 +321,7 @@ class VideoCallViewController: UIViewController {
             localVideoTrack = LocalVideoTrack(source: camera, enabled: true, name: "local_video")
 
             // Render local video in thumbnail
-            if let renderer = thumbnailVideoView {
+            if let renderer = localThumbnailView {
                 localVideoTrack?.addRenderer(renderer)
             }
 
@@ -178,25 +330,13 @@ class VideoCallViewController: UIViewController {
                 camera.startCapture(device: device) { (captureDevice, videoFormat, error) in
                     if let error = error {
                         print("Camera start capture failed: \(error.localizedDescription)")
+                    } else {
+                        print("Local camera started successfully")
                     }
                 }
             } else {
                 print("Failed to get front camera device")
             }
-        }
-
-        // Configure audio session for VoIP
-        configureAudioSession()
-    }
-
-    private func configureAudioSession() {
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setCategory(.playAndRecord, mode: .videoChat, options: [.allowBluetooth])
-            try audioSession.setActive(true)
-            try audioSession.overrideOutputAudioPort(.speaker)
-        } catch {
-            print("Failed to configure audio session: \(error.localizedDescription)")
         }
     }
 
@@ -256,9 +396,14 @@ class VideoCallViewController: UIViewController {
             return
         }
 
+        guard isAudioMuted != muted else {
+            return // Already in desired state
+        }
+
         isAudioMuted = muted
         localAudioTrack?.isEnabled = !muted
         updateButtonStates()
+        print("Audio muted: \(muted)")
     }
 
     func enableVideo(enabled: Bool) {
@@ -267,9 +412,14 @@ class VideoCallViewController: UIViewController {
             return
         }
 
+        guard isVideoEnabled != enabled else {
+            return // Already in desired state
+        }
+
         isVideoEnabled = enabled
         localVideoTrack?.isEnabled = enabled
         updateButtonStates()
+        print("Video enabled: \(enabled)")
     }
 
     @objc func flipCamera() {
@@ -289,6 +439,8 @@ class VideoCallViewController: UIViewController {
             camera.selectCaptureDevice(device) { (captureDevice, videoFormat, error) in
                 if let error = error {
                     print("Camera flip failed: \(error.localizedDescription)")
+                } else {
+                    print("Camera flipped successfully")
                 }
             }
         }
@@ -300,18 +452,15 @@ class VideoCallViewController: UIViewController {
             return
         }
 
-        isSpeakerEnabled = enabled
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            if enabled {
-                try audioSession.overrideOutputAudioPort(.speaker)
-            } else {
-                try audioSession.overrideOutputAudioPort(.none)
-            }
-        } catch {
-            print("Failed to set speaker: \(error.localizedDescription)")
+        // Speaker toggle only works if not using Bluetooth or wired headset
+        if currentAudioRoute == .bluetooth || currentAudioRoute == .wiredHeadset {
+            print("Cannot toggle speaker while using \(currentAudioRoute)")
+            return
         }
-        updateButtonStates()
+
+        preferredAudioRoute = enabled ? .speaker : .earpiece
+        updateAudioRouting()
+        print("Speaker enabled: \(enabled)")
     }
 
     @objc func disconnect() {
@@ -320,19 +469,34 @@ class VideoCallViewController: UIViewController {
             return
         }
 
+        print("Disconnecting from room")
         transitionToState(.disconnecting)
         room?.disconnect()
         cleanup()
         dismiss(animated: true, completion: nil)
     }
 
+    @objc private func toggleSpeaker() {
+        setSpeaker(currentAudioRoute != .speaker)
+    }
+
     // MARK: - Cleanup
     private func cleanup() {
+        print("Cleaning up resources")
+
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceTimer?.invalidate()
         dominantSpeakerDebounceTimer = nil
 
-        localVideoTrack?.removeRenderer(thumbnailVideoView)
+        // Remove audio route observer
+        NotificationCenter.default.removeObserver(
+            self,
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
+
+        // Clean up local media
+        localVideoTrack?.removeRenderer(localThumbnailView)
         localVideoTrack = nil
         localAudioTrack = nil
         camera?.stopCapture()
@@ -340,18 +504,35 @@ class VideoCallViewController: UIViewController {
         room = nil
         localParticipant = nil
 
-        // Clean up all participant video views
-        participantVideoViews.removeAll()
+        // Clean up all participant renderers
+        for (_, renderer) in participantRenderers {
+            renderer.videoTrack?.removeRenderer(renderer.videoView)
+            renderer.videoView.removeFromSuperview()
+        }
+        participantRenderers.removeAll()
+
+        // Reset state
         dominantSpeakerIdentity = nil
+        focusedParticipantIdentity = nil
+        userHasSelectedParticipant = false
+
+        // Reset audio session
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setActive(false)
+        } catch {
+            print("Failed to deactivate audio session: \(error.localizedDescription)")
+        }
     }
 
     deinit {
         cleanup()
+        print("VideoCallViewController deallocated")
     }
 
     // MARK: - Auto-Close Logic
     private func checkAutoClose() {
-        if remoteParticipantCount == 0 {
+        if remoteParticipantCount == 0 && callState == .connected {
             print("All remote participants left, auto-closing")
             TwilioVideoPlugin.getInstance()?.notifyRoomAutoClosed(reason: "last-participant-left")
             disconnect()
@@ -395,29 +576,28 @@ class VideoCallViewController: UIViewController {
         let isConnected = (callState == .connected)
 
         DispatchQueue.main.async {
-            // Mute button
+            // Mute button - highlighted when MUTED
             self.muteButton.isEnabled = isConnected
-            self.muteButton.backgroundColor = self.isAudioMuted ? .systemGreen : .systemGray
-            self.muteButton.alpha = isConnected ? 1.0 : 0.5
+            self.muteButton.isSelected = self.isAudioMuted
 
-            // Video button
+            // Video button - highlighted when DISABLED (showing off state)
             self.videoButton.isEnabled = isConnected
-            self.videoButton.backgroundColor = self.isVideoEnabled ? .systemGray : .systemGreen
-            self.videoButton.alpha = isConnected ? 1.0 : 0.5
+            self.videoButton.isSelected = !self.isVideoEnabled
 
-            // Flip button
+            // Flip button - enabled only when connected and video is on
             self.flipButton.isEnabled = isConnected && self.isVideoEnabled
-            self.flipButton.alpha = (isConnected && self.isVideoEnabled) ? 1.0 : 0.5
+            self.flipButton.isSelected = false
 
-            // Speaker button
-            self.speakerButton.isEnabled = isConnected
-            self.speakerButton.backgroundColor = self.isSpeakerEnabled ? .systemGreen : .systemGray
-            self.speakerButton.alpha = isConnected ? 1.0 : 0.5
+            // Speaker button - show current audio route state
+            // Enabled only if not using Bluetooth or wired headset
+            self.speakerButton.isEnabled = isConnected &&
+                self.currentAudioRoute != .bluetooth &&
+                self.currentAudioRoute != .wiredHeadset
+            self.speakerButton.isSelected = self.currentAudioRoute == .speaker
 
-            // Hangup button - always enabled once joining
+            // Hangup button - enabled during joining and connected
             self.hangupButton.isEnabled = (self.callState == .joining ||
                                           self.callState == .connected)
-            self.hangupButton.alpha = self.hangupButton.isEnabled ? 1.0 : 0.5
         }
     }
 }
@@ -512,98 +692,228 @@ extension VideoCallViewController {
         remoteParticipantCount += 1
         participant.delegate = self
 
-        // Create or get stable video view for this participant
-        let videoView = participantVideoViews[participant.identity] ?? {
-            let view = VideoView(frame: .zero)
-            view.contentMode = .scaleAspectFill
-            participantVideoViews[participant.identity] = view
-            print("Created new VideoView for participant: \(participant.identity)")
-            return view
-        }()
+        // Create stable renderer for this participant
+        let renderer = createParticipantRenderer(identity: participant.identity)
+        participantRenderers[participant.identity] = renderer
 
-        // Subscribe to existing video tracks
+        print("Added remote participant: \(participant.identity), total: \(remoteParticipantCount)")
+
+        // Subscribe to existing published video tracks
         for publication in participant.remoteVideoTracks {
             if let track = publication.remoteTrack, publication.isTrackSubscribed {
                 addRemoteVideoTrack(participant.identity, track: track)
             }
+        }
+
+        // Update focused participant if this is first remote or no selection yet
+        if focusedParticipantIdentity == nil || focusedParticipantIdentity == "local" {
+            // Auto-focus on first remote participant
+            updateFocusedParticipant(participant.identity, isUserSelection: false)
         }
     }
 
     private func removeRemoteParticipant(_ participant: RemoteParticipant) {
         remoteParticipantCount -= 1
 
+        print("Removing participant: \(participant.identity), remaining: \(remoteParticipantCount)")
+
+        // Unsubscribe from video tracks
         for publication in participant.remoteVideoTracks {
             if let track = publication.remoteTrack, publication.isTrackSubscribed {
                 removeRemoteVideoTrack(participant.identity, track: track)
             }
         }
 
-        // Clean up video view for this participant
-        if let videoView = participantVideoViews.removeValue(forKey: participant.identity) {
+        // Remove renderer and clean up views
+        if let renderer = participantRenderers.removeValue(forKey: participant.identity) {
             DispatchQueue.main.async {
-                if videoView.superview == self.primaryVideoView {
-                    videoView.removeFromSuperview()
+                // Remove from primary container if displayed there
+                if renderer.isFocused {
+                    renderer.videoView.removeFromSuperview()
                 }
+                // Remove from thumbnail grid
+                renderer.videoView.removeFromSuperview()
             }
-            print("Removed VideoView for participant: \(participant.identity)")
+        }
+
+        // If this was the focused participant, switch focus
+        if focusedParticipantIdentity == participant.identity {
+            selectNewFocusedParticipant()
+        }
+
+        // Update dominant speaker if it was this participant
+        if dominantSpeakerIdentity == participant.identity {
+            dominantSpeakerIdentity = nil
         }
     }
 
+    private func createParticipantRenderer(identity: String) -> ParticipantRenderer {
+        let videoView = VideoView(frame: .zero)
+        videoView.contentMode = .scaleAspectFill
+        videoView.backgroundColor = .darkGray
+        videoView.layer.cornerRadius = 8
+        videoView.clipsToBounds = true
+        videoView.translatesAutoresizingMaskIntoConstraints = false
+        videoView.isUserInteractionEnabled = true
+
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(thumbnailTapped(_:)))
+        videoView.addGestureRecognizer(tapGesture)
+
+        print("Created VideoView for participant: \(identity)")
+        return ParticipantRenderer(identity: identity, videoView: videoView, videoTrack: nil, isFocused: false)
+    }
+
+    @objc private func thumbnailTapped(_ gesture: UITapGestureRecognizer) {
+        guard let videoView = gesture.view else { return }
+
+        // Find the participant identity for this video view
+        for (identity, renderer) in participantRenderers {
+            if renderer.videoView == videoView {
+                onThumbnailSelected(identity)
+                break
+            }
+        }
+    }
+
+    private func onThumbnailSelected(_ identity: String) {
+        print("Thumbnail selected: \(identity)")
+        updateFocusedParticipant(identity, isUserSelection: true)
+    }
+
+    private func updateFocusedParticipant(_ newIdentity: String, isUserSelection: Bool) {
+        guard focusedParticipantIdentity != newIdentity else {
+            return // Already focused
+        }
+
+        let oldIdentity = focusedParticipantIdentity
+
+        print("Switching focus from \(oldIdentity ?? "nil") to \(newIdentity) (userSelection: \(isUserSelection))")
+
+        userHasSelectedParticipant = isUserSelection
+        focusedParticipantIdentity = newIdentity
+
+        DispatchQueue.main.async {
+            // Move old focused participant to thumbnail grid
+            if let oldId = oldIdentity {
+                if oldId == "local" {
+                    // Local was focused, it's already in thumbnail
+                } else if var oldRenderer = self.participantRenderers[oldId] {
+                    oldRenderer.isFocused = false
+                    self.participantRenderers[oldId] = oldRenderer
+                    oldRenderer.videoView.removeFromSuperview()
+
+                    // Add back to thumbnail grid
+                    self.thumbnailGridContainer.addArrangedSubview(oldRenderer.videoView)
+                    NSLayoutConstraint.activate([
+                        oldRenderer.videoView.heightAnchor.constraint(equalToConstant: 120)
+                    ])
+                }
+            }
+
+            // Move new focused participant to primary view
+            if newIdentity == "local" {
+                // Show local video in primary (rare case)
+                self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
+
+                // Create a new view for primary display to avoid moving the thumbnail
+                let primaryLocalView = VideoView(frame: self.primaryVideoContainer.bounds)
+                primaryLocalView.contentMode = .scaleAspectFill
+                primaryLocalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                self.localVideoTrack?.addRenderer(primaryLocalView)
+                self.primaryVideoContainer.addSubview(primaryLocalView)
+            } else if var newRenderer = self.participantRenderers[newIdentity] {
+                newRenderer.isFocused = true
+                self.participantRenderers[newIdentity] = newRenderer
+
+                // Remove from thumbnail grid
+                newRenderer.videoView.removeFromSuperview()
+
+                // Add to primary container
+                self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
+                newRenderer.videoView.frame = self.primaryVideoContainer.bounds
+                newRenderer.videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                self.primaryVideoContainer.addSubview(newRenderer.videoView)
+            }
+        }
+    }
+
+    private func selectNewFocusedParticipant() {
+        // Priority: Dominant speaker > First available participant > Local
+        let newFocus: String
+        if let dominantId = dominantSpeakerIdentity, participantRenderers.keys.contains(dominantId) {
+            newFocus = dominantId
+        } else if let firstId = participantRenderers.keys.first {
+            newFocus = firstId
+        } else {
+            newFocus = "local"
+        }
+
+        updateFocusedParticipant(newFocus, isUserSelection: false)
+    }
+
     private func addRemoteVideoTrack(_ participantIdentity: String, track: RemoteVideoTrack) {
-        guard let videoView = participantVideoViews[participantIdentity] else {
-            print("No VideoView found for participant: \(participantIdentity)")
+        guard var renderer = participantRenderers[participantIdentity] else {
+            print("No renderer found for participant: \(participantIdentity)")
             return
         }
 
         DispatchQueue.main.async {
-            // Add renderer to the stable video view (reuse, don't recreate)
-            track.addRenderer(videoView)
+            // Attach track to the stable video view
+            track.addRenderer(renderer.videoView)
 
-            // If this is the dominant speaker or first participant, show in primary view
-            if self.dominantSpeakerIdentity == participantIdentity || self.remoteParticipantCount == 1 {
-                self.updatePrimaryVideoView(participantIdentity)
+            // Update renderer's track reference
+            renderer.videoTrack = track
+            self.participantRenderers[participantIdentity] = renderer
+
+            // Ensure view is in the correct container
+            if renderer.isFocused {
+                // Should be in primary container
+                if renderer.videoView.superview != self.primaryVideoContainer {
+                    renderer.videoView.removeFromSuperview()
+                    self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
+                    renderer.videoView.frame = self.primaryVideoContainer.bounds
+                    renderer.videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                    self.primaryVideoContainer.addSubview(renderer.videoView)
+                }
+            } else {
+                // Should be in thumbnail grid
+                if renderer.videoView.superview != self.thumbnailGridContainer {
+                    renderer.videoView.removeFromSuperview()
+                    self.thumbnailGridContainer.addArrangedSubview(renderer.videoView)
+                    NSLayoutConstraint.activate([
+                        renderer.videoView.heightAnchor.constraint(equalToConstant: 120)
+                    ])
+                }
             }
 
-            print("Added video track renderer for participant: \(participantIdentity)")
+            print("Added video track to participant: \(participantIdentity) (focused: \(renderer.isFocused))")
         }
     }
 
     private func removeRemoteVideoTrack(_ participantIdentity: String, track: RemoteVideoTrack) {
-        guard let videoView = participantVideoViews[participantIdentity] else {
-            print("No VideoView found for participant: \(participantIdentity)")
+        guard var renderer = participantRenderers[participantIdentity] else {
+            print("No renderer found for participant: \(participantIdentity)")
             return
         }
 
         DispatchQueue.main.async {
-            track.removeRenderer(videoView)
-            print("Removed video track renderer for participant: \(participantIdentity)")
+            track.removeRenderer(renderer.videoView)
+
+            // Clear track reference
+            renderer.videoTrack = nil
+            self.participantRenderers[participantIdentity] = renderer
+
+            print("Removed video track from participant: \(participantIdentity)")
         }
     }
 
     private func updateDominantSpeaker(_ participantIdentity: String?) {
         dominantSpeakerIdentity = participantIdentity
 
-        if let identity = participantIdentity {
-            updatePrimaryVideoView(identity)
-        }
-    }
-
-    private func updatePrimaryVideoView(_ participantIdentity: String) {
-        guard let videoView = participantVideoViews[participantIdentity] else { return }
-
-        DispatchQueue.main.async {
-            // Only update if not already showing this participant
-            if self.primaryVideoView.subviews.first != videoView {
-                // Remove all existing subviews
-                self.primaryVideoView.subviews.forEach { $0.removeFromSuperview() }
-
-                // Add the participant's video view
-                videoView.frame = self.primaryVideoView.bounds
-                videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                self.primaryVideoView.addSubview(videoView)
-
-                print("Updated primary view to show participant: \(participantIdentity)")
-            }
+        // Only auto-focus on dominant speaker if user hasn't made a selection
+        if !userHasSelectedParticipant, let identity = participantIdentity,
+           participantRenderers.keys.contains(identity) {
+            updateFocusedParticipant(identity, isUserSelection: false)
         }
     }
 }

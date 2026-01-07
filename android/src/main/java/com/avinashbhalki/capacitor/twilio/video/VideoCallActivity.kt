@@ -1,16 +1,25 @@
 package com.avinashbhalki.capacitor.twilio.video
 
+import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
 import com.twilio.video.*
 import tvi.webrtc.VideoSink
@@ -35,9 +44,26 @@ class VideoCallActivity : AppCompatActivity() {
         DISCONNECTED     // Call fully ended
     }
 
+    // Audio Routing State
+    enum class AudioRoute {
+        BLUETOOTH,
+        WIRED_HEADSET,
+        SPEAKER,
+        EARPIECE
+    }
+
+    // Participant Renderer - stable video view per participant
+    private data class ParticipantRenderer(
+        val identity: String,
+        val videoView: VideoView,
+        var videoTrack: RemoteVideoTrack? = null,
+        var isFocused: Boolean = false
+    )
+
     // UI Elements
-    private lateinit var primaryVideoView: VideoView
-    private lateinit var thumbnailVideoView: VideoView
+    private lateinit var primaryVideoContainer: FrameLayout
+    private lateinit var thumbnailGridContainer: LinearLayout
+    private lateinit var localThumbnailView: VideoView
     private lateinit var controlsContainer: FrameLayout
     private lateinit var muteButton: ImageButton
     private lateinit var videoButton: ImageButton
@@ -57,16 +83,23 @@ class VideoCallActivity : AppCompatActivity() {
     private var callState: CallState = CallState.IDLE
     private var isAudioMuted = false
     private var isVideoEnabled = true
-    private var isSpeakerEnabled = true
+    private var currentAudioRoute: AudioRoute = AudioRoute.SPEAKER
     private var accessToken: String? = null
     private var roomName: String? = null
     private var remoteParticipantCount = 0
 
-    // Multi-participant video management
-    private val participantVideoViews = mutableMapOf<String, VideoView>()
+    // Participant Rendering Manager
+    private val participantRenderers = mutableMapOf<String, ParticipantRenderer>()
+    private var focusedParticipantIdentity: String? = null // User-selected or dominant speaker
     private var dominantSpeakerIdentity: String? = null
+    private var userHasSelectedParticipant = false // User selection overrides dominant speaker
     private val mainHandler = Handler(Looper.getMainLooper())
     private var dominantSpeakerDebounceRunnable: Runnable? = null
+
+    // Audio Management
+    private var bluetoothReceiver: BroadcastReceiver? = null
+    private var isBluetoothScoOn = false
+    private var preferredAudioRoute: AudioRoute = AudioRoute.SPEAKER
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,6 +112,9 @@ class VideoCallActivity : AppCompatActivity() {
         roomName = intent.getStringExtra("roomName")
 
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        // Setup audio routing
+        setupAudioRouting()
 
         setupLocalMedia()
 
@@ -93,28 +129,49 @@ class VideoCallActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(android.graphics.Color.BLACK)
+            setBackgroundColor(Color.BLACK)
         }
 
-        // Primary video view (remote participant - full screen)
-        primaryVideoView = VideoView(this).apply {
+        // Primary video container (remote participant - full screen)
+        primaryVideoContainer = FrameLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
+            setBackgroundColor(Color.BLACK)
         }
-        rootLayout.addView(primaryVideoView)
+        rootLayout.addView(primaryVideoContainer)
 
-        // Thumbnail video view (local participant - picture-in-picture)
-        thumbnailVideoView = VideoView(this).apply {
-            val size = (120 * resources.displayMetrics.density).toInt()
-            layoutParams = FrameLayout.LayoutParams(size, size).apply {
-                setMargins(16, 16, 16, 16)
-                gravity = android.view.Gravity.TOP or android.view.Gravity.END
+        // Thumbnail grid container (top-right, overlays primary video)
+        val thumbnailSize = (120 * resources.displayMetrics.density).toInt()
+        val thumbnailMargin = (16 * resources.displayMetrics.density).toInt()
+
+        thumbnailGridContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                thumbnailSize,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.END
+                setMargins(thumbnailMargin, thumbnailMargin * 3, thumbnailMargin, 0)
             }
-            setBackgroundColor(android.graphics.Color.DKGRAY)
         }
-        rootLayout.addView(thumbnailVideoView)
+        rootLayout.addView(thumbnailGridContainer)
+
+        // Local video thumbnail (always at top of grid)
+        localThumbnailView = VideoView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(thumbnailSize, thumbnailSize).apply {
+                setMargins(0, 0, 0, thumbnailMargin / 2)
+            }
+            setBackgroundColor(Color.DKGRAY)
+            // Make clickable to select local video as focused
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                onThumbnailSelected("local")
+            }
+        }
+        thumbnailGridContainer.addView(localThumbnailView)
 
         // Controls container at bottom
         controlsContainer = FrameLayout(this).apply {
@@ -122,20 +179,20 @@ class VideoCallActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 (80 * resources.displayMetrics.density).toInt()
             ).apply {
-                gravity = android.view.Gravity.BOTTOM
+                gravity = Gravity.BOTTOM
             }
-            setBackgroundColor(android.graphics.Color.parseColor("#AA000000"))
+            setBackgroundColor(Color.parseColor("#AA000000"))
             setPadding(16, 16, 16, 16)
         }
 
         // Create controls layout
-        val controlsLayout = android.widget.LinearLayout(this).apply {
+        val controlsLayout = LinearLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
         }
 
         muteButton = createControlButton("🎤")
@@ -143,7 +200,7 @@ class VideoCallActivity : AppCompatActivity() {
         flipButton = createControlButton("🔄")
         speakerButton = createControlButton("🔊")
         hangupButton = createControlButton("📞").apply {
-            setBackgroundColor(android.graphics.Color.RED)
+            backgroundTintList = ColorStateList.valueOf(Color.RED)
         }
 
         controlsLayout.addView(muteButton)
@@ -169,15 +226,17 @@ class VideoCallActivity : AppCompatActivity() {
         return ImageButton(this).apply {
             val size = (48 * resources.displayMetrics.density).toInt()
             val margin = (8 * resources.displayMetrics.density).toInt()
-            layoutParams = android.widget.LinearLayout.LayoutParams(size, size).apply {
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
                 setMargins(margin, 0, margin, 0)
             }
             contentDescription = text
 
-            // Set up stateful background
+            // Set up stateful background with proper color states
             backgroundTintList = createButtonColorStateList()
             isClickable = true
             isFocusable = true
+            // Default to not selected
+            isSelected = false
         }
     }
 
@@ -189,12 +248,162 @@ class VideoCallActivity : AppCompatActivity() {
         )
 
         val colors = intArrayOf(
-            Color.parseColor("#444444"),  // Disabled - dark gray
-            Color.parseColor("#4CAF50"),  // Selected - green
-            Color.parseColor("#888888")   // Default - gray
+            Color.parseColor("#333333"),  // Disabled - dark gray
+            Color.parseColor("#4CAF50"),  // Selected/Active - green
+            Color.parseColor("#777777")   // Default - gray
         )
 
         return ColorStateList(states, colors)
+    }
+
+    // ===== Audio Routing Management =====
+
+    private fun setupAudioRouting() {
+        audioManager?.let { am ->
+            // Set audio mode for communication
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+
+            // Register Bluetooth headset receiver
+            val filter = IntentFilter().apply {
+                addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+                addAction(AudioManager.ACTION_HEADSET_PLUG)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ECLAIR) {
+                    addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+                }
+            }
+
+            bluetoothReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    when (intent?.action) {
+                        AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED -> {
+                            val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
+                            handleScoStateChange(state)
+                        }
+                        AudioManager.ACTION_HEADSET_PLUG -> {
+                            val state = intent.getIntExtra("state", -1)
+                            if (state == 0) {
+                                // Headset unplugged
+                                updateAudioRouting()
+                            } else if (state == 1) {
+                                // Headset plugged in
+                                updateAudioRouting()
+                            }
+                        }
+                        BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                            updateAudioRouting()
+                        }
+                    }
+                }
+            }
+
+            registerReceiver(bluetoothReceiver, filter)
+
+            // Initialize audio routing
+            updateAudioRouting()
+        }
+    }
+
+    private fun handleScoStateChange(state: Int) {
+        when (state) {
+            AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
+                Log.d(TAG, "Bluetooth SCO connected")
+                isBluetoothScoOn = true
+                currentAudioRoute = AudioRoute.BLUETOOTH
+                updateButtonStates()
+            }
+            AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                Log.d(TAG, "Bluetooth SCO disconnected")
+                isBluetoothScoOn = false
+                // Fallback to speaker or wired headset
+                updateAudioRouting()
+            }
+        }
+    }
+
+    private fun updateAudioRouting() {
+        audioManager?.let { am ->
+            // Priority: Bluetooth > Wired Headset > Preferred (Speaker/Earpiece)
+
+            val hasBluetoothHeadset = isBluetoothAvailable()
+            val hasWiredHeadset = isWiredHeadsetConnected()
+
+            when {
+                hasBluetoothHeadset -> {
+                    // Bluetooth has highest priority
+                    if (!isBluetoothScoOn) {
+                        am.startBluetoothSco()
+                        am.isBluetoothScoOn = true
+                    }
+                    currentAudioRoute = AudioRoute.BLUETOOTH
+                    Log.d(TAG, "Audio routed to Bluetooth")
+                }
+                hasWiredHeadset -> {
+                    // Wired headset second priority
+                    if (isBluetoothScoOn) {
+                        am.stopBluetoothSco()
+                        am.isBluetoothScoOn = false
+                    }
+                    am.isSpeakerphoneOn = false
+                    currentAudioRoute = AudioRoute.WIRED_HEADSET
+                    Log.d(TAG, "Audio routed to Wired Headset")
+                }
+                preferredAudioRoute == AudioRoute.SPEAKER -> {
+                    // User prefers speaker
+                    if (isBluetoothScoOn) {
+                        am.stopBluetoothSco()
+                        am.isBluetoothScoOn = false
+                    }
+                    am.isSpeakerphoneOn = true
+                    currentAudioRoute = AudioRoute.SPEAKER
+                    Log.d(TAG, "Audio routed to Speaker")
+                }
+                else -> {
+                    // Default to earpiece
+                    if (isBluetoothScoOn) {
+                        am.stopBluetoothSco()
+                        am.isBluetoothScoOn = false
+                    }
+                    am.isSpeakerphoneOn = false
+                    currentAudioRoute = AudioRoute.EARPIECE
+                    Log.d(TAG, "Audio routed to Earpiece")
+                }
+            }
+
+            updateButtonStates()
+        }
+    }
+
+    private fun isBluetoothAvailable(): Boolean {
+        audioManager?.let { am ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                return devices.any {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                }
+            } else {
+                // Fallback for older API levels
+                @Suppress("DEPRECATION")
+                return am.isBluetoothScoAvailableOffCall || am.isBluetoothA2dpOn
+            }
+        }
+        return false
+    }
+
+    private fun isWiredHeadsetConnected(): Boolean {
+        audioManager?.let { am ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                return devices.any {
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                return am.isWiredHeadsetOn
+            }
+        }
+        return false
     }
 
     private fun setupLocalMedia() {
@@ -207,7 +416,9 @@ class VideoCallActivity : AppCompatActivity() {
 
         // Create local video track
         localVideoTrack = LocalVideoTrack.create(this, true, cameraCapturer!!, "local_video")
-        localVideoTrack?.addSink(thumbnailVideoView)
+        localVideoTrack?.addSink(localThumbnailView)
+
+        Log.d(TAG, "Local media setup complete")
     }
 
     private fun connectToRoom() {
@@ -318,17 +529,25 @@ class VideoCallActivity : AppCompatActivity() {
         }
     }
 
-    private fun addRemoteParticipant(participant: RemoteParticipant) {
+    private fun updateDominantSpeaker(participantIdentity: String?) {
+        dominantSpeakerIdentity = participantIdentity
+
+        // Only auto-focus on dominant speaker if user hasn't made a selection
+        if (!userHasSelectedParticipant && participantIdentity != null &&
+            participantRenderers.containsKey(participantIdentity)) {
+            updateFocusedParticipant(participantIdentity, isUserSelection = false)
+        }
+    }
         remoteParticipantCount++
         participant.setListener(remoteParticipantListener)
 
-        // Create or get stable video view for this participant
-        val videoView = participantVideoViews.getOrPut(participant.identity) {
-            VideoView(this).apply {
-                Log.d(TAG, "Created new VideoView for participant: ${participant.identity}")
-            }
-        }
+        // Create stable renderer for this participant
+        val renderer = createParticipantRenderer(participant.identity)
+        participantRenderers[participant.identity] = renderer
 
+        Log.d(TAG, "Added remote participant: ${participant.identity}, total: $remoteParticipantCount")
+
+        // Subscribe to existing published video tracks
         participant.remoteVideoTracks.forEach { publication ->
             if (publication.isTrackSubscribed) {
                 publication.remoteVideoTrack?.let { track ->
@@ -336,11 +555,20 @@ class VideoCallActivity : AppCompatActivity() {
                 }
             }
         }
+
+        // Update focused participant if this is first remote or no selection yet
+        if (focusedParticipantIdentity == null || focusedParticipantIdentity == "local") {
+            // Auto-focus on first remote participant
+            updateFocusedParticipant(participant.identity, isUserSelection = false)
+        }
     }
 
     private fun removeRemoteParticipant(participant: RemoteParticipant) {
         remoteParticipantCount--
 
+        Log.d(TAG, "Removing participant: ${participant.identity}, remaining: $remoteParticipantCount")
+
+        // Unsubscribe from video tracks
         participant.remoteVideoTracks.forEach { publication ->
             if (publication.isTrackSubscribed) {
                 publication.remoteVideoTrack?.let { track ->
@@ -349,15 +577,132 @@ class VideoCallActivity : AppCompatActivity() {
             }
         }
 
-        // Clean up video view for this participant
-        participantVideoViews.remove(participant.identity)?.let { videoView ->
+        // Remove renderer and clean up views
+        participantRenderers.remove(participant.identity)?.let { renderer ->
             runOnUiThread {
-                if (primaryVideoView.childCount > 0 && primaryVideoView.getChildAt(0) == videoView) {
-                    primaryVideoView.removeAllViews()
+                // Remove from primary container if displayed there
+                if (renderer.isFocused) {
+                    primaryVideoContainer.removeView(renderer.videoView)
+                }
+                // Remove from thumbnail grid
+                thumbnailGridContainer.removeView(renderer.videoView)
+            }
+        }
+
+        // If this was the focused participant, switch focus
+        if (focusedParticipantIdentity == participant.identity) {
+            selectNewFocusedParticipant()
+        }
+
+        // Update dominant speaker if it was this participant
+        if (dominantSpeakerIdentity == participant.identity) {
+            dominantSpeakerIdentity = null
+        }
+    }
+
+    private fun createParticipantRenderer(identity: String): ParticipantRenderer {
+        val thumbnailSize = (120 * resources.displayMetrics.density).toInt()
+        val thumbnailMargin = (8 * resources.displayMetrics.density).toInt()
+
+        val videoView = VideoView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(thumbnailSize, thumbnailSize).apply {
+                setMargins(0, 0, 0, thumbnailMargin)
+            }
+            setBackgroundColor(Color.DKGRAY)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                onThumbnailSelected(identity)
+            }
+        }
+
+        Log.d(TAG, "Created VideoView for participant: $identity")
+        return ParticipantRenderer(identity, videoView, null, false)
+    }
+
+    private fun onThumbnailSelected(identity: String) {
+        Log.d(TAG, "Thumbnail selected: $identity")
+        updateFocusedParticipant(identity, isUserSelection = true)
+    }
+
+    private fun updateFocusedParticipant(newIdentity: String, isUserSelection: Boolean) {
+        if (focusedParticipantIdentity == newIdentity) {
+            return // Already focused
+        }
+
+        val oldIdentity = focusedParticipantIdentity
+
+        Log.d(TAG, "Switching focus from $oldIdentity to $newIdentity (userSelection: $isUserSelection)")
+
+        userHasSelectedParticipant = isUserSelection
+        focusedParticipantIdentity = newIdentity
+
+        runOnUiThread {
+            // Move old focused participant to thumbnail grid
+            oldIdentity?.let { oldId ->
+                if (oldId == "local") {
+                    // Local was focused, move back to thumbnail
+                    // Already in thumbnail, just update flag
+                } else {
+                    participantRenderers[oldId]?.let { oldRenderer ->
+                        oldRenderer.isFocused = false
+                        primaryVideoContainer.removeView(oldRenderer.videoView)
+
+                        // Add back to thumbnail grid
+                        if (oldRenderer.videoView.parent == null) {
+                            thumbnailGridContainer.addView(oldRenderer.videoView)
+                        }
+                    }
                 }
             }
-            Log.d(TAG, "Removed VideoView for participant: ${participant.identity}")
+
+            // Move new focused participant to primary view
+            if (newIdentity == "local") {
+                // Show local video in primary (rare case)
+                primaryVideoContainer.removeAllViews()
+                // Create a new view for primary display to avoid moving the thumbnail
+                val primaryLocalView = VideoView(this).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                }
+                localVideoTrack?.addSink(primaryLocalView)
+                primaryVideoContainer.addView(primaryLocalView)
+            } else {
+                participantRenderers[newIdentity]?.let { newRenderer ->
+                    newRenderer.isFocused = true
+
+                    // Remove from thumbnail grid
+                    thumbnailGridContainer.removeView(newRenderer.videoView)
+
+                    // Add to primary container
+                    primaryVideoContainer.removeAllViews()
+                    newRenderer.videoView.layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                    primaryVideoContainer.addView(newRenderer.videoView)
+                }
+            }
         }
+    }
+
+    private fun selectNewFocusedParticipant() {
+        // Priority: Dominant speaker > First available participant > Local
+        val newFocus = when {
+            dominantSpeakerIdentity != null && participantRenderers.containsKey(dominantSpeakerIdentity) -> {
+                dominantSpeakerIdentity!!
+            }
+            participantRenderers.isNotEmpty() -> {
+                participantRenderers.keys.first()
+            }
+            else -> {
+                "local"
+            }
+        }
+
+        updateFocusedParticipant(newFocus, isUserSelection = false)
     }
 
     private val remoteParticipantListener = object : RemoteParticipant.Listener {
@@ -466,71 +811,68 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun addRemoteVideoTrack(participantIdentity: String, track: RemoteVideoTrack) {
-        val videoView = participantVideoViews[participantIdentity]
-        if (videoView == null) {
-            Log.w(TAG, "No VideoView found for participant: $participantIdentity")
+        val renderer = participantRenderers[participantIdentity]
+        if (renderer == null) {
+            Log.w(TAG, "No renderer found for participant: $participantIdentity")
             return
         }
 
         runOnUiThread {
-            // Add sink to the stable video view (reuse, don't recreate)
-            track.addSink(videoView)
+            // Attach track to the stable video view
+            track.addSink(renderer.videoView)
 
-            // If this is the dominant speaker or first participant, show in primary view
-            if (dominantSpeakerIdentity == participantIdentity || remoteParticipantCount == 1) {
-                updatePrimaryVideoView(participantIdentity)
+            // Update renderer's track reference
+            val updatedRenderer = renderer.copy(videoTrack = track)
+            participantRenderers[participantIdentity] = updatedRenderer
+
+            // Ensure view is in the correct container
+            if (updatedRenderer.isFocused) {
+                // Should be in primary container
+                if (renderer.videoView.parent != primaryVideoContainer) {
+                    thumbnailGridContainer.removeView(renderer.videoView)
+                    primaryVideoContainer.removeAllViews()
+                    renderer.videoView.layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                    primaryVideoContainer.addView(renderer.videoView)
+                }
+            } else {
+                // Should be in thumbnail grid
+                if (renderer.videoView.parent != thumbnailGridContainer) {
+                    val thumbnailSize = (120 * resources.displayMetrics.density).toInt()
+                    val thumbnailMargin = (8 * resources.displayMetrics.density).toInt()
+                    renderer.videoView.layoutParams = LinearLayout.LayoutParams(thumbnailSize, thumbnailSize).apply {
+                        setMargins(0, 0, 0, thumbnailMargin)
+                    }
+                    thumbnailGridContainer.addView(renderer.videoView)
+                }
             }
 
-            Log.d(TAG, "Added video track sink for participant: $participantIdentity")
+            Log.d(TAG, "Added video track to participant: $participantIdentity (focused: ${updatedRenderer.isFocused})")
         }
     }
 
     private fun removeRemoteVideoTrack(participantIdentity: String, track: RemoteVideoTrack) {
-        val videoView = participantVideoViews[participantIdentity]
-        if (videoView == null) {
-            Log.w(TAG, "No VideoView found for participant: $participantIdentity")
+        val renderer = participantRenderers[participantIdentity]
+        if (renderer == null) {
+            Log.w(TAG, "No renderer found for participant: $participantIdentity")
             return
         }
 
         runOnUiThread {
-            track.removeSink(videoView)
-            Log.d(TAG, "Removed video track sink for participant: $participantIdentity")
-        }
-    }
+            track.removeSink(renderer.videoView)
 
-    private fun updateDominantSpeaker(participantIdentity: String?) {
-        dominantSpeakerIdentity = participantIdentity
+            // Clear track reference
+            val updatedRenderer = renderer.copy(videoTrack = null)
+            participantRenderers[participantIdentity] = updatedRenderer
 
-        if (participantIdentity != null) {
-            updatePrimaryVideoView(participantIdentity)
-        }
-    }
-
-    private fun updatePrimaryVideoView(participantIdentity: String) {
-        val videoView = participantVideoViews[participantIdentity] ?: return
-
-        runOnUiThread {
-            // Only update if not already showing this participant
-            if (primaryVideoView.childCount == 0 || primaryVideoView.getChildAt(0) != videoView) {
-                primaryVideoView.removeAllViews()
-
-                // Remove from parent if it has one
-                (videoView.parent as? FrameLayout)?.removeView(videoView)
-
-                // Add to primary view
-                val layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
-                primaryVideoView.addView(videoView, layoutParams)
-
-                Log.d(TAG, "Updated primary view to show participant: $participantIdentity")
-            }
+            Log.d(TAG, "Removed video track from participant: $participantIdentity")
         }
     }
 
     private fun checkAutoClose() {
-        if (remoteParticipantCount == 0) {
+        if (remoteParticipantCount == 0 && callState == CallState.CONNECTED) {
             Log.d(TAG, "All remote participants left, auto-closing")
             TwilioVideoPlugin.getInstance()?.notifyRoomAutoClosed("last-participant-left")
             disconnect()
@@ -571,22 +913,26 @@ class VideoCallActivity : AppCompatActivity() {
         val isConnected = callState == CallState.CONNECTED
 
         runOnUiThread {
-            // Mute button
+            // Mute button - highlighted when MUTED
             muteButton.isEnabled = isConnected
             muteButton.isSelected = isAudioMuted
 
-            // Video button
+            // Video button - highlighted when DISABLED (showing icon state)
             videoButton.isEnabled = isConnected
             videoButton.isSelected = !isVideoEnabled
 
-            // Flip button
+            // Flip button - enabled only when connected and video is on
             flipButton.isEnabled = isConnected && isVideoEnabled
+            flipButton.isSelected = false
 
-            // Speaker button
-            speakerButton.isEnabled = isConnected
-            speakerButton.isSelected = isSpeakerEnabled
+            // Speaker button - show current audio route state
+            // Highlight if using speaker (not Bluetooth or headset)
+            speakerButton.isEnabled = isConnected &&
+                currentAudioRoute != AudioRoute.BLUETOOTH &&
+                currentAudioRoute != AudioRoute.WIRED_HEADSET
+            speakerButton.isSelected = currentAudioRoute == AudioRoute.SPEAKER
 
-            // Hangup button - always enabled once joining
+            // Hangup button - enabled during joining and connected
             hangupButton.isEnabled = (callState == CallState.JOINING ||
                                      callState == CallState.CONNECTED)
         }
@@ -600,6 +946,7 @@ class VideoCallActivity : AppCompatActivity() {
             return
         }
 
+        Log.d(TAG, "Disconnecting from room")
         transitionToState(CallState.DISCONNECTING)
         room?.disconnect()
         cleanup()
@@ -614,9 +961,14 @@ class VideoCallActivity : AppCompatActivity() {
             return
         }
 
+        if (isAudioMuted == muted) {
+            return // Already in desired state
+        }
+
         isAudioMuted = muted
         localAudioTrack?.enable(!muted)
         updateButtonStates()
+        Log.d(TAG, "Audio muted: $muted")
     }
 
     fun enableVideo(enabled: Boolean) {
@@ -625,9 +977,14 @@ class VideoCallActivity : AppCompatActivity() {
             return
         }
 
+        if (isVideoEnabled == enabled) {
+            return // Already in desired state
+        }
+
         isVideoEnabled = enabled
         localVideoTrack?.enable(enabled)
         updateButtonStates()
+        Log.d(TAG, "Video enabled: $enabled")
     }
 
     fun flipCamera() {
@@ -637,6 +994,7 @@ class VideoCallActivity : AppCompatActivity() {
         }
 
         cameraCapturer?.switchCamera()
+        Log.d(TAG, "Camera flipped")
     }
 
     fun setSpeaker(enabled: Boolean) {
@@ -645,11 +1003,16 @@ class VideoCallActivity : AppCompatActivity() {
             return
         }
 
-        isSpeakerEnabled = enabled
-        audioManager?.let {
-            it.isSpeakerphoneOn = enabled
+        // Speaker toggle only works if not using Bluetooth or wired headset
+        if (currentAudioRoute == AudioRoute.BLUETOOTH ||
+            currentAudioRoute == AudioRoute.WIRED_HEADSET) {
+            Log.w(TAG, "Cannot toggle speaker while using ${currentAudioRoute}")
+            return
         }
-        updateButtonStates()
+
+        preferredAudioRoute = if (enabled) AudioRoute.SPEAKER else AudioRoute.EARPIECE
+        updateAudioRouting()
+        Log.d(TAG, "Speaker enabled: $enabled")
     }
 
     private fun toggleAudioMute() {
@@ -661,16 +1024,19 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun toggleSpeaker() {
-        setSpeaker(!isSpeakerEnabled)
+        setSpeaker(currentAudioRoute != AudioRoute.SPEAKER)
     }
 
     private fun cleanup() {
+        Log.d(TAG, "Cleaning up resources")
+
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceRunnable?.let { mainHandler.removeCallbacks(it) }
         dominantSpeakerDebounceRunnable = null
 
+        // Clean up local media
         localVideoTrack?.let {
-            it.removeSink(thumbnailVideoView)
+            it.removeSink(localThumbnailView)
             it.release()
         }
         localVideoTrack = null
@@ -681,15 +1047,47 @@ class VideoCallActivity : AppCompatActivity() {
         cameraCapturer?.stopCapture()
         cameraCapturer = null
 
-        // Clean up all participant video views
-        participantVideoViews.clear()
+        // Clean up all participant renderers
+        runOnUiThread {
+            participantRenderers.values.forEach { renderer ->
+                renderer.videoTrack?.removeSink(renderer.videoView)
+                primaryVideoContainer.removeView(renderer.videoView)
+                thumbnailGridContainer.removeView(renderer.videoView)
+            }
+        }
+        participantRenderers.clear()
+
+        // Reset state
         dominantSpeakerIdentity = null
+        focusedParticipantIdentity = null
+        userHasSelectedParticipant = false
+
+        // Clean up audio
+        audioManager?.let { am ->
+            if (isBluetoothScoOn) {
+                am.stopBluetoothSco()
+                am.isBluetoothScoOn = false
+                isBluetoothScoOn = false
+            }
+            am.mode = AudioManager.MODE_NORMAL
+        }
+
+        // Unregister Bluetooth receiver
+        bluetoothReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering Bluetooth receiver: ${e.message}")
+            }
+        }
+        bluetoothReceiver = null
 
         room = null
         localParticipant = null
     }
 
     override fun onDestroy() {
+        Log.d(TAG, "Activity destroyed")
         cleanup()
         instance = null
 

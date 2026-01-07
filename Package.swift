@@ -14,7 +14,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", branch: "main"),
-        .package(url: "https://github.com/twilio/twilio-video-ios", .exact("5.8.2"))
+        // Pin to exact version for reliability
+        .package(url: "https://github.com/twilio/twilio-video-ios", .exact("5.8.3"))
     ],
     targets: [
         .target(
@@ -25,7 +26,17 @@ let package = Package(
             ],
             path: "ios/Plugin",
             sources: ["TwilioVideoPlugin.swift", "VideoCallViewController.swift"],
-            publicHeadersPath: "."
+            publicHeadersPath: ".",
+            // Ensure proper framework linking
+            linkerSettings: [
+                .linkedFramework("VideoToolbox"),
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("GLKit"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit")
+            ]
         )
     ]
 )

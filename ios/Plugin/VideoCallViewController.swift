@@ -71,24 +71,6 @@ class VideoCallViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        muteButton = UIButton(type: .system)
-        videoButton = UIButton(type: .system)
-        flipButton = UIButton(type: .system)
-        speakerButton = UIButton(type: .system)
-        hangupButton = UIButton(type: .system)
-
-        muteButton.setImage(UIImage(systemName: "mic.fill")?.withRenderingMode(.alwaysTemplate), for: .normal)
-        videoButton.setImage(UIImage(systemName: "video.fill")?.withRenderingMode(.alwaysTemplate), for: .normal)
-        flipButton.setImage(UIImage(systemName: "camera.rotate")?.withRenderingMode(.alwaysTemplate), for: .normal)
-        speakerButton.setImage(UIImage(systemName: "speaker.wave.2.fill")?.withRenderingMode(.alwaysTemplate), for: .normal)
-        hangupButton.setImage(UIImage(systemName: "phone.down.fill")?.withRenderingMode(.alwaysTemplate), for: .normal)
-
-        muteButton.tintColor = .white
-        videoButton.tintColor = .white
-        flipButton.tintColor = .white
-        speakerButton.tintColor = .white
-        hangupButton.tintColor = .red
-
         setupFullScreenUI()
         setupAudioSession()
         setupLocalMedia()
@@ -96,6 +78,7 @@ class VideoCallViewController: UIViewController {
         // Transition to joining state
         transitionToState(.joining)
         connectToRoom()
+
     }
 
     // MARK: - UI Setup
@@ -180,7 +163,7 @@ class VideoCallViewController: UIViewController {
         stackView.axis = .horizontal
         stackView.distribution = .equalSpacing
         stackView.alignment = .center
-        stackView.spacing = 16
+        stackView.spacing = 20
         stackView.translatesAutoresizingMaskIntoConstraints = false
         controlsContainer.addSubview(stackView)
 
@@ -205,26 +188,13 @@ class VideoCallViewController: UIViewController {
         flipButton.setImage(UIImage(systemName: "camera.rotate"), for: .normal)
         flipButton.addTarget(self, action: #selector(flipCamera), for: .touchUpInside)
 
-        speakerButton = createControlButton(title: "Speaker/Bluetooth")
-        speakerButton.setImage(UIImage(systemName: "speaker.wave.2.fill"), for: .normal)
-        speakerButton.setImage(UIImage(systemName: "bluetooth"), for: .selected)
+        speakerButton = createControlButton(title: "Speaker")
+        speakerButton.setImage(UIImage(systemName: "speaker.wave.3.fill"), for: .normal)
+        speakerButton.setImage(UIImage(systemName: "iphone"), for: .selected)
         speakerButton.addTarget(self, action: #selector(toggleSpeaker), for: .touchUpInside)
 
         hangupButton = createControlButton(title: "End Call")
         hangupButton.setImage(UIImage(systemName: "phone.down.fill"), for: .normal)
-        hangupButton.backgroundColor = .systemRed
-        // Override the configuration update handler for hangup button to keep it red
-        hangupButton.configurationUpdateHandler = { btn in
-            if !btn.isEnabled {
-                btn.backgroundColor = UIColor.systemRed.withAlphaComponent(0.3)
-                btn.tintColor = .white
-                btn.alpha = 0.5
-            } else {
-                btn.backgroundColor = .systemRed
-                btn.tintColor = .white
-                btn.alpha = 1.0
-            }
-        }
         hangupButton.addTarget(self, action: #selector(disconnect), for: .touchUpInside)
 
         stackView.addArrangedSubview(muteButton)
@@ -235,45 +205,46 @@ class VideoCallViewController: UIViewController {
     }
 
     private func createControlButton(title: String) -> UIButton {
-        let button = UIButton(type: .system)
-        button.setTitle("", for: .normal) // Clear title, use icons only
-        button.titleLabel?.font = UIFont.systemFont(ofSize: 24)
-        button.layer.cornerRadius = 24
+        var config = UIButton.Configuration.filled()
+        config.baseBackgroundColor = .systemGray
+        config.baseForegroundColor = .white
+
+        config.cornerStyle = .capsule
+        
+        let symbolConfig = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold, scale: .medium)
+        config.preferredSymbolConfigurationForImage = symbolConfig
+
+        let button = UIButton(configuration: config)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.tintColor = .white
         button.accessibilityLabel = title
 
-        // Set up stateful colors - use configurationUpdateHandler for proper state handling
-        button.backgroundColor = .systemGray
-        button.setTitleColor(.white, for: .normal)
-        button.setTitleColor(.lightGray, for: .disabled)
-
         NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 48),
-            button.heightAnchor.constraint(equalToConstant: 48)
+            button.widthAnchor.constraint(equalToConstant: 52),
+            button.heightAnchor.constraint(equalToConstant: 52)
         ])
 
-        // Add configuration update handler for better visual feedback
         button.configurationUpdateHandler = { btn in
+            guard var updatedConfig = btn.configuration else { return }
+            
             if !btn.isEnabled {
-                btn.backgroundColor = UIColor.systemGray.withAlphaComponent(0.3)
-                btn.tintColor = .lightGray
-                btn.alpha = 0.5
+                updatedConfig.baseBackgroundColor = .systemGray.withAlphaComponent(0.3)
+                updatedConfig.baseForegroundColor = .lightGray
             } else if btn.isSelected {
-                btn.backgroundColor = .systemGreen
-                btn.tintColor = .white
-                btn.alpha = 1.0
+                updatedConfig.baseBackgroundColor = .systemGreen
+                updatedConfig.baseForegroundColor = .white
             } else {
-                btn.backgroundColor = .systemGray
-                btn.tintColor = .white
-                btn.alpha = 1.0
+                // Special case for hangup button which we set to red
+                if btn.accessibilityLabel == "End Call" {
+                    updatedConfig.baseBackgroundColor = .systemRed
+                } else {
+                    updatedConfig.baseBackgroundColor = .systemGray
+                }
+                updatedConfig.baseForegroundColor = .white
             }
+            btn.configuration = updatedConfig
         }
-
         return button
     }
-
-    // MARK: - Audio Session Setup
     private func setupAudioSession() {
         let audioSession = AVAudioSession.sharedInstance()
         do {
@@ -441,7 +412,7 @@ class VideoCallViewController: UIViewController {
     }
 
     @objc func toggleSpeaker() {
-        setSpeaker(enabled: !isSpeakerEnabled)
+        setSpeaker(enabled: currentAudioRoute != .speaker)
     }
 
     func muteAudio(muted: Bool) {
@@ -530,9 +501,6 @@ class VideoCallViewController: UIViewController {
         dismiss(animated: true, completion: nil)
     }
 
-    @objc private func toggleSpeaker() {
-        setSpeaker(currentAudioRoute != .speaker)
-    }
 
     // MARK: - Cleanup
     private func cleanup() {

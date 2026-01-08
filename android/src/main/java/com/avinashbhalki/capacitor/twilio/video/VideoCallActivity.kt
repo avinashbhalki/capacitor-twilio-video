@@ -197,19 +197,24 @@ class VideoCallActivity : AppCompatActivity() {
 
         muteButton = createControlButton("Mute").apply {
             setImageResource(android.R.drawable.ic_btn_speak_now)
+            contentDescription = "Mute/Unmute"
         }
         videoButton = createControlButton("Video").apply {
             setImageResource(android.R.drawable.presence_video_online)
+            contentDescription = "Enable/Disable Video"
         }
-        flipButton = createControlButton("Flip").apply {
+        flipButton = createControlButton("Flip Camera").apply {
             setImageResource(android.R.drawable.ic_menu_rotate)
+            contentDescription = "Flip Camera"
         }
         speakerButton = createControlButton("Speaker").apply {
             setImageResource(android.R.drawable.ic_lock_silent_mode_off)
+            contentDescription = "Speaker/Bluetooth"
         }
-        hangupButton = createControlButton("Hangup").apply {
+        hangupButton = createControlButton("End Call").apply {
             setImageResource(android.R.drawable.ic_menu_call)
             backgroundTintList = ColorStateList.valueOf(Color.RED)
+            contentDescription = "End Call"
         }
 
         controlsLayout.addView(muteButton)
@@ -242,24 +247,29 @@ class VideoCallActivity : AppCompatActivity() {
 
             // Set up stateful background with proper color states
             backgroundTintList = createButtonColorStateList()
+            imageTintList = ColorStateList.valueOf(Color.WHITE)
             isClickable = true
             isFocusable = true
             // Default to not selected
             isSelected = false
+
+            // Set minimum touch target size for accessibility (48dp)
+            minimumWidth = size
+            minimumHeight = size
         }
     }
 
     private fun createButtonColorStateList(): ColorStateList {
         val states = arrayOf(
-            intArrayOf(-android.R.attr.state_enabled), // Disabled
-            intArrayOf(android.R.attr.state_selected),   // Selected/Active
-            intArrayOf()                                  // Default
+            intArrayOf(-android.R.attr.state_enabled),                  // Disabled
+            intArrayOf(android.R.attr.state_selected),                  // Selected/Active
+            intArrayOf()                                                 // Default
         )
 
         val colors = intArrayOf(
-            Color.parseColor("#333333"),  // Disabled - dark gray
+            Color.parseColor("#4D4D4D"),  // Disabled - dark gray with transparency
             Color.parseColor("#4CAF50"),  // Selected/Active - green
-            Color.parseColor("#777777")   // Default - gray
+            Color.parseColor("#666666")   // Default - medium gray
         )
 
         return ColorStateList(states, colors)
@@ -978,11 +988,9 @@ class VideoCallActivity : AppCompatActivity() {
             flipButton.isSelected = false
 
             // Speaker button - show current audio route state
-            // Highlight if using speaker (not Bluetooth or headset)
-            speakerButton.isEnabled = isConnected &&
-                currentAudioRoute != AudioRoute.BLUETOOTH &&
-                currentAudioRoute != AudioRoute.WIRED_HEADSET
-            speakerButton.isSelected = currentAudioRoute == AudioRoute.SPEAKER
+            // Always enabled when connected, selected when using Bluetooth
+            speakerButton.isEnabled = isConnected
+            speakerButton.isSelected = currentAudioRoute == AudioRoute.BLUETOOTH
 
             // Hangup button - enabled during joining and connected
             hangupButton.isEnabled = (callState == CallState.JOINING ||

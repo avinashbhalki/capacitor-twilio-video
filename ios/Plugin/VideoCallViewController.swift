@@ -137,6 +137,19 @@ class VideoCallViewController: UIViewController {
             controlsContainer.heightAnchor.constraint(equalToConstant: 80)
         ])
 
+        // Add blur effect for modern appearance
+        let blurEffect = UIBlurEffect(style: .dark)
+        let blurView = UIVisualEffectView(effect: blurEffect)
+        blurView.translatesAutoresizingMaskIntoConstraints = false
+        controlsContainer.insertSubview(blurView, at: 0)
+
+        NSLayoutConstraint.activate([
+            blurView.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor),
+            blurView.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor),
+            blurView.topAnchor.constraint(equalTo: controlsContainer.topAnchor),
+            blurView.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor)
+        ])
+
         setupControls()
     }
 
@@ -170,18 +183,30 @@ class VideoCallViewController: UIViewController {
         videoButton.setImage(UIImage(systemName: "video.slash.fill"), for: .selected)
         videoButton.addTarget(self, action: #selector(toggleVideo), for: .touchUpInside)
 
-        flipButton = createControlButton(title: "Flip")
-        flipButton.setImage(UIImage(systemName: "arrow.triangle.2.circlepath.camera.fill"), for: .normal)
+        flipButton = createControlButton(title: "Flip Camera")
+        flipButton.setImage(UIImage(systemName: "camera.rotate"), for: .normal)
         flipButton.addTarget(self, action: #selector(flipCamera), for: .touchUpInside)
 
-        speakerButton = createControlButton(title: "Speaker")
-        speakerButton.setImage(UIImage(systemName: "speaker.wave.3.fill"), for: .normal)
-        speakerButton.setImage(UIImage(systemName: "speaker.fill"), for: .selected)
+        speakerButton = createControlButton(title: "Speaker/Bluetooth")
+        speakerButton.setImage(UIImage(systemName: "speaker.wave.2.fill"), for: .normal)
+        speakerButton.setImage(UIImage(systemName: "bluetooth"), for: .selected)
         speakerButton.addTarget(self, action: #selector(toggleSpeaker), for: .touchUpInside)
 
-        hangupButton = createControlButton(title: "Hangup")
+        hangupButton = createControlButton(title: "End Call")
         hangupButton.setImage(UIImage(systemName: "phone.down.fill"), for: .normal)
         hangupButton.backgroundColor = .systemRed
+        // Override the configuration update handler for hangup button to keep it red
+        hangupButton.configurationUpdateHandler = { btn in
+            if !btn.isEnabled {
+                btn.backgroundColor = UIColor.systemRed.withAlphaComponent(0.3)
+                btn.tintColor = .white
+                btn.alpha = 0.5
+            } else {
+                btn.backgroundColor = .systemRed
+                btn.tintColor = .white
+                btn.alpha = 1.0
+            }
+        }
         hangupButton.addTarget(self, action: #selector(disconnect), for: .touchUpInside)
 
         stackView.addArrangedSubview(muteButton)
@@ -198,6 +223,7 @@ class VideoCallViewController: UIViewController {
         button.layer.cornerRadius = 24
         button.translatesAutoresizingMaskIntoConstraints = false
         button.tintColor = .white
+        button.accessibilityLabel = title
 
         // Set up stateful colors - use configurationUpdateHandler for proper state handling
         button.backgroundColor = .systemGray
@@ -222,6 +248,8 @@ class VideoCallViewController: UIViewController {
             } else {
                 btn.backgroundColor = .systemGray
                 btn.tintColor = .white
+                btn.alpha = 1.0
+            }
         }
 
         return button
@@ -597,11 +625,9 @@ class VideoCallViewController: UIViewController {
             self.flipButton.isSelected = false
 
             // Speaker button - show current audio route state
-            // Enabled only if not using Bluetooth or wired headset
-            self.speakerButton.isEnabled = isConnected &&
-                self.currentAudioRoute != .bluetooth &&
-                self.currentAudioRoute != .wiredHeadset
-            self.speakerButton.isSelected = self.currentAudioRoute == .speaker
+            // Selected when using Bluetooth, enabled when using speaker/earpiece
+            self.speakerButton.isEnabled = isConnected
+            self.speakerButton.isSelected = self.currentAudioRoute == .bluetooth
 
             // Hangup button - enabled during joining and connected
             self.hangupButton.isEnabled = (self.callState == .joining ||

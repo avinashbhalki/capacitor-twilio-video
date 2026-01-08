@@ -71,6 +71,24 @@ class VideoCallViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
+        muteButton = UIButton(type: .system)
+        videoButton = UIButton(type: .system)
+        flipButton = UIButton(type: .system)
+        speakerButton = UIButton(type: .system)
+        hangupButton = UIButton(type: .system)
+
+        muteButton.setImage(UIImage(systemName: "mic.fill")?.withRenderingMode(.alwaysTemplate), for: .normal)
+        videoButton.setImage(UIImage(systemName: "video.fill")?.withRenderingMode(.alwaysTemplate), for: .normal)
+        flipButton.setImage(UIImage(systemName: "camera.rotate")?.withRenderingMode(.alwaysTemplate), for: .normal)
+        speakerButton.setImage(UIImage(systemName: "speaker.wave.2.fill")?.withRenderingMode(.alwaysTemplate), for: .normal)
+        hangupButton.setImage(UIImage(systemName: "phone.down.fill")?.withRenderingMode(.alwaysTemplate), for: .normal)
+
+        muteButton.tintColor = .white
+        videoButton.tintColor = .white
+        flipButton.tintColor = .white
+        speakerButton.tintColor = .white
+        hangupButton.tintColor = .red
+
         setupFullScreenUI()
         setupAudioSession()
         setupLocalMedia()

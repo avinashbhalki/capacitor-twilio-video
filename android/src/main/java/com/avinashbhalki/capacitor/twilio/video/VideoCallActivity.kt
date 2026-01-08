@@ -66,6 +66,7 @@ class VideoCallActivity : AppCompatActivity() {
     private lateinit var localThumbnailView: VideoView
     private lateinit var controlsContainer: FrameLayout
     private lateinit var muteButton: ImageButton
+    private lateinit var cameraSwitchButton: ImageButton
     private lateinit var videoButton: ImageButton
     private lateinit var flipButton: ImageButton
     private lateinit var speakerButton: ImageButton
@@ -199,6 +200,10 @@ class VideoCallActivity : AppCompatActivity() {
             setImageResource(android.R.drawable.ic_btn_speak_now)
             contentDescription = "Mute/Unmute"
         }
+        cameraSwitchButton = createControlButton("Camera Switch").apply {
+            setImageResource(R.drawable.cameraswitch)
+            contentDescription = "Switch Camera"
+        }
         videoButton = createControlButton("Video").apply {
             setImageResource(android.R.drawable.presence_video_online)
             contentDescription = "Enable/Disable Video"
@@ -218,6 +223,7 @@ class VideoCallActivity : AppCompatActivity() {
         }
 
         controlsLayout.addView(muteButton)
+        controlsLayout.addView(cameraSwitchButton)
         controlsLayout.addView(videoButton)
         controlsLayout.addView(flipButton)
         controlsLayout.addView(speakerButton)
@@ -730,19 +736,12 @@ class VideoCallActivity : AppCompatActivity() {
                     )
                     primaryVideoContainer.addView(newRenderer.videoView)
                     Log.d(TAG, "✓ Moved $newIdentity from thumbnail to primary (renderer reused)")
-        val newFocus = when {
-            dominantSpeakerIdentity != null && participantRenderers.containsKey(dominantSpeakerIdentity) -> {
-                dominantSpeakerIdentity!!
+                }
             }
-            participantRenderers.isNotEmpty() -> {
-                participantRenderers.keys.first()
-            }
-            else -> {
-                "local"
-            }
-        }
 
-        updateFocusedParticipant(newFocus, isUserSelection = false)
+            // Update UI for new focus
+            updateButtonStates()
+        }
     }
 
     private val remoteParticipantListener = object : RemoteParticipant.Listener {

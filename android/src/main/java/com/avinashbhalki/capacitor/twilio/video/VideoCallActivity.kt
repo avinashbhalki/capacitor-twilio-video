@@ -516,8 +516,12 @@ class VideoCallActivity : AppCompatActivity() {
                 room.name,
                 twilioException?.message
             )
-            cleanup()
-            finish()
+            
+            // Cleanup and finish on main thread to ensure notifiers are sent first
+            runOnUiThread {
+                cleanup()
+                finish()
+            }
         }
 
         override fun onParticipantConnected(room: Room, participant: RemoteParticipant) {
@@ -563,6 +567,8 @@ class VideoCallActivity : AppCompatActivity() {
             updateFocusedParticipant(participantIdentity, isUserSelection = false)
         }
     }
+
+    private fun addRemoteParticipant(participant: RemoteParticipant) {
         remoteParticipantCount++
         participant.setListener(remoteParticipantListener)
 
@@ -742,6 +748,21 @@ class VideoCallActivity : AppCompatActivity() {
             // Update UI for new focus
             updateButtonStates()
         }
+    }
+
+    private fun selectNewFocusedParticipant() {
+        // Priority: Dominant speaker > First available participant > Local
+        val newFocus: String = when {
+            dominantSpeakerIdentity != null && participantRenderers.containsKey(dominantSpeakerIdentity) -> {
+                dominantSpeakerIdentity!!
+            }
+            participantRenderers.isNotEmpty() -> {
+                participantRenderers.keys.first()
+            }
+            else -> "local"
+        }
+
+        updateFocusedParticipant(newFocus, isUserSelection = false)
     }
 
     private val remoteParticipantListener = object : RemoteParticipant.Listener {

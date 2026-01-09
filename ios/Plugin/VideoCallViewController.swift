@@ -667,6 +667,11 @@ extension VideoCallViewController: RoomDelegate {
             reason: error?.localizedDescription
         )
         cleanup()
+        
+        // Dismiss the view controller to return to the previous screen
+        DispatchQueue.main.async {
+            self.dismiss(animated: true, completion: nil)
+        }
     }
 
     func roomIsReconnecting(room: Room, error: Error) {

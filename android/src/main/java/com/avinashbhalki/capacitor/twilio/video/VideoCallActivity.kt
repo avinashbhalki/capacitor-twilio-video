@@ -516,7 +516,7 @@ class VideoCallActivity : AppCompatActivity() {
                 room.name,
                 twilioException?.message
             )
-            
+
             // Cleanup and finish on main thread to ensure notifiers are sent first
             runOnUiThread {
                 cleanup()
@@ -1029,10 +1029,8 @@ class VideoCallActivity : AppCompatActivity() {
         Log.d(TAG, "Disconnecting from room")
         transitionToState(CallState.DISCONNECTING)
         room?.disconnect()
-        cleanup()
-        runOnUiThread {
-            finish()
-        }
+        // Don't call cleanup() or finish() here - let onDisconnected handle it
+        // This ensures the SDK's disconnect callback is properly triggered
     }
 
     fun muteAudio(muted: Boolean) {

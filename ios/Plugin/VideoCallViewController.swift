@@ -210,7 +210,7 @@ class VideoCallViewController: UIViewController {
         config.baseForegroundColor = .white
 
         config.cornerStyle = .capsule
-        
+
         let symbolConfig = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold, scale: .medium)
         config.preferredSymbolConfigurationForImage = symbolConfig
 
@@ -225,7 +225,7 @@ class VideoCallViewController: UIViewController {
 
         button.configurationUpdateHandler = { btn in
             guard var updatedConfig = btn.configuration else { return }
-            
+
             if !btn.isEnabled {
                 updatedConfig.baseBackgroundColor = .systemGray.withAlphaComponent(0.3)
                 updatedConfig.baseForegroundColor = .lightGray
@@ -497,8 +497,8 @@ class VideoCallViewController: UIViewController {
         print("Disconnecting from room")
         transitionToState(.disconnecting)
         room?.disconnect()
-        cleanup()
-        dismiss(animated: true, completion: nil)
+        // Don't call cleanup() or dismiss here - let roomDidDisconnect handle it
+        // This ensures the SDK's disconnect callback is properly triggered
     }
 
 
@@ -667,7 +667,7 @@ extension VideoCallViewController: RoomDelegate {
             reason: error?.localizedDescription
         )
         cleanup()
-        
+
         // Dismiss the view controller to return to the previous screen
         DispatchQueue.main.async {
             self.dismiss(animated: true, completion: nil)

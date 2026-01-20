@@ -243,6 +243,11 @@ export interface RoleSelectedEvent {
    * Room name
    */
   roomName?: string;
+
+  /**
+   * Room SID from Twilio
+   */
+  roomSID?: string;
 }
 
 /**

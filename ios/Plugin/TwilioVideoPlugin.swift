@@ -97,12 +97,16 @@ public class TwilioVideoPlugin: CAPPlugin {
     }
 
     @objc func sendUsersList(_ call: CAPPluginCall) {
+        print("TwilioVideoPlugin: sendUsersList method invoked")
+
         guard let selectedRoleKey = call.getString("selectedRoleKey"), !selectedRoleKey.isEmpty else {
+            print("TwilioVideoPlugin: sendUsersList failed - selectedRoleKey is required")
             call.reject("selectedRoleKey is required")
             return
         }
 
         guard ["mht", "cct", "patient", "participant"].contains(selectedRoleKey) else {
+            print("TwilioVideoPlugin: sendUsersList failed - invalid selectedRoleKey: \(selectedRoleKey)")
             call.reject("Invalid selectedRoleKey. Allowed values: mht, cct, patient, participant")
             return
         }
@@ -110,17 +114,24 @@ public class TwilioVideoPlugin: CAPPlugin {
         let usersArray = call.getArray("users") as? [[String: Any]] ?? []
         var users: [[String: String]] = []
 
-        for userDict in usersArray {
+        print("TwilioVideoPlugin: sendUsersList parsing \(usersArray.count) users")
+
+        for (index, userDict) in usersArray.enumerated() {
             if let id = userDict["id"] as? String, !id.isEmpty,
                let userId = userDict["user_id"] as? String, !userId.isEmpty,
                let fullName = userDict["full_name"] as? String, !fullName.isEmpty {
+                print("TwilioVideoPlugin: sendUsersList parsed user: \(fullName)")
                 users.append([
                     "id": id,
                     "user_id": userId,
                     "full_name": fullName
                 ])
+            } else {
+                print("TwilioVideoPlugin: sendUsersList skipping incomplete user at index \(index)")
             }
         }
+
+        print("TwilioVideoPlugin: sendUsersList calling handleUsersList with \(users.count) users for role: \(selectedRoleKey)")
 
         DispatchQueue.main.async {
             self.videoViewController?.handleUsersList(selectedRoleKey: selectedRoleKey, users: users)
@@ -180,12 +191,13 @@ public class TwilioVideoPlugin: CAPPlugin {
         ])
     }
 
-    public func notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?) {
+    public func notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?, roomSID: String?) {
         var data: [String: Any] = ["selectedRoleKey": selectedRoleKey]
         if let identity = identity { data["identity"] = identity }
         if let role = role { data["role"] = role }
         if let tenantId = tenantId { data["tenantId"] = tenantId }
         if let roomName = roomName { data["roomName"] = roomName }
+        if let roomSID = roomSID { data["roomSID"] = roomSID }
         notifyListeners("roleSelected", data: data)
     }
 

@@ -103,21 +103,26 @@ class TwilioVideoPlugin : Plugin() {
 
     @PluginMethod
     fun sendUsersList(call: PluginCall) {
+        Log.d("TwilioVideoPlugin", "sendUsersList method invoked")
+
         val selectedRoleKey = call.getString("selectedRoleKey")
         val usersArray = call.getArray("users")
 
         if (selectedRoleKey == null || selectedRoleKey.isEmpty()) {
+            Log.e("TwilioVideoPlugin", "sendUsersList failed: selectedRoleKey is required")
             call.reject("selectedRoleKey is required")
             return
         }
 
         if (!listOf("mht", "cct", "patient", "participant").contains(selectedRoleKey)) {
+            Log.e("TwilioVideoPlugin", "sendUsersList failed: Invalid selectedRoleKey: $selectedRoleKey")
             call.reject("Invalid selectedRoleKey. Allowed values: mht, cct, patient, participant")
             return
         }
 
         val users = mutableListOf<Map<String, String>>()
         if (usersArray != null) {
+            Log.d("TwilioVideoPlugin", "sendUsersList parsing ${usersArray.length()} users")
             for (i in 0 until usersArray.length()) {
                 try {
                     val userObj = usersArray.getJSONObject(i)
@@ -126,18 +131,24 @@ class TwilioVideoPlugin : Plugin() {
                     val fullName = userObj.optString("full_name", "")
 
                     if (id.isNotEmpty() && userId.isNotEmpty() && fullName.isNotEmpty()) {
+                        Log.d("TwilioVideoPlugin", "sendUsersList parsed user: $fullName")
                         users.add(mapOf(
                             "id" to id,
                             "user_id" to userId,
                             "full_name" to fullName
                         ))
+                    } else {
+                        Log.w("TwilioVideoPlugin", "sendUsersList skipping incomplete user at index $i")
                     }
                 } catch (e: Exception) {
-                    // Skip invalid user objects
+                    Log.e("TwilioVideoPlugin", "sendUsersList error parsing user at index $i: ${e.message}")
                 }
             }
+        } else {
+            Log.d("TwilioVideoPlugin", "sendUsersList received null users array")
         }
 
+        Log.i("TwilioVideoPlugin", "sendUsersList calling handleUsersList with ${users.size} users for role: $selectedRoleKey")
         VideoCallActivity.getInstance()?.handleUsersList(selectedRoleKey, users)
         call.resolve()
     }
@@ -197,13 +208,14 @@ class TwilioVideoPlugin : Plugin() {
         notifyListeners("roomError", data)
     }
 
-    fun notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?) {
+    fun notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?, roomSID: String?) {
         val data = JSObject()
         data.put("selectedRoleKey", selectedRoleKey)
         if (identity != null) data.put("identity", identity)
         if (role != null) data.put("role", role)
         if (tenantId != null) data.put("tenantId", tenantId)
         if (roomName != null) data.put("roomName", roomName)
+        if (roomSID != null) data.put("roomSID", roomSID)
         notifyListeners("roleSelected", data)
     }
 

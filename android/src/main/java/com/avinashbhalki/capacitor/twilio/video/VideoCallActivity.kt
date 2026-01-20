@@ -103,11 +103,6 @@ class VideoCallActivity : AppCompatActivity() {
     private var userRole: String? = null
     private var tenantId: Int? = null
 
-    // Role selection and user list management
-    private var pendingRoleKey: String? = null
-    private var roleSelectionDialog: androidx.appcompat.app.AlertDialog? = null
-    private var userListDialog: androidx.appcompat.app.AlertDialog? = null
-
     // Participant Rendering Manager
     private val participantRenderers = mutableMapOf<String, ParticipantRenderer>()
     private var focusedParticipantIdentity: String? = null // User-selected or dominant speaker
@@ -1204,17 +1199,29 @@ class VideoCallActivity : AppCompatActivity() {
             userIdentity,
             userRole,
             tenantId,
-            roomName
+            roomName,
+            room?.sid
         )
     }
 
     fun handleUsersList(selectedRoleKey: String, users: List<Map<String, String>>) {
+        Log.d(TAG, "handleUsersList invoked with roleKey: $selectedRoleKey, users count: ${users.size}")
+
         if (selectedRoleKey != pendingRoleKey) {
+            Log.e(TAG, "handleUsersList failed: Role key mismatch. Expected: $pendingRoleKey, Got: $selectedRoleKey")
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Role key mismatch", "userList")
             return
         }
 
+        // Log each user for debugging
+        users.forEachIndexed { index, user ->
+            val fullName = user["full_name"] ?: "Unknown"
+            Log.d(TAG, "handleUsersList user[$index]: $fullName")
+        }
+
         runOnUiThread {
+            Log.i(TAG, "handleUsersList opening list UI on main thread")
+
             // Dismiss any existing user list dialog
             userListDialog?.dismiss()
 
@@ -1222,10 +1229,13 @@ class VideoCallActivity : AppCompatActivity() {
             TwilioVideoPlugin.getInstance()?.notifyUsersListLoaded(selectedRoleKey, users.size)
 
             if (users.isEmpty()) {
+                Log.d(TAG, "handleUsersList showing empty list dialog")
                 showEmptyUserListDialog(selectedRoleKey)
             } else {
+                Log.d(TAG, "handleUsersList showing user selection dialog")
                 showUserSelectionDialog(selectedRoleKey, users)
             }
+        }
         }
     }
 

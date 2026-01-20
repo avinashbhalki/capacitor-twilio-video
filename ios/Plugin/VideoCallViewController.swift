@@ -585,17 +585,29 @@ class VideoCallViewController: UIViewController {
             identity: userIdentity,
             role: userRole,
             tenantId: tenantId,
-            roomName: roomName
+            roomName: roomName,
+            roomSID: room?.sid
         )
     }
 
     func handleUsersList(selectedRoleKey: String, users: [[String: String]]) {
+        print("VideoCallViewController: handleUsersList invoked with roleKey: \(selectedRoleKey), users count: \(users.count)")
+
         guard selectedRoleKey == pendingRoleKey else {
+            print("VideoCallViewController: handleUsersList failed - role key mismatch. Expected: \(pendingRoleKey ?? "nil"), Got: \(selectedRoleKey)")
             TwilioVideoPlugin.getInstance()?.notifyPopupError(message: "Role key mismatch", popupType: "userList")
             return
         }
 
+        // Log each user for debugging
+        for (index, user) in users.enumerated() {
+            let fullName = user["full_name"] ?? "Unknown"
+            print("VideoCallViewController: handleUsersList user[\(index)]: \(fullName)")
+        }
+
         DispatchQueue.main.async {
+            print("VideoCallViewController: handleUsersList opening list UI on main thread")
+
             // Dismiss any existing user list alert
             self.userListAlert?.dismiss(animated: false, completion: nil)
 
@@ -603,8 +615,10 @@ class VideoCallViewController: UIViewController {
             TwilioVideoPlugin.getInstance()?.notifyUsersListLoaded(selectedRoleKey: selectedRoleKey, userCount: users.count)
 
             if users.isEmpty {
+                print("VideoCallViewController: handleUsersList showing empty list dialog")
                 self.showEmptyUserListDialog(selectedRoleKey: selectedRoleKey)
             } else {
+                print("VideoCallViewController: handleUsersList showing user selection dialog")
                 self.showUserSelectionDialog(selectedRoleKey: selectedRoleKey, users: users)
             }
         }

@@ -579,6 +579,16 @@ class VideoCallViewController: UIViewController {
     private func handleRoleSelection(selectedRoleKey: String) {
         pendingRoleKey = selectedRoleKey
 
+        // Get second participant role and identity (first remote participant)
+        var secondParticipantRole: String? = nil
+        var secondParticipantIdentity: String? = nil
+        if !remoteParticipants.isEmpty {
+            let firstRemoteParticipant = remoteParticipants.first!
+            secondParticipantIdentity = firstRemoteParticipant.identity
+            // Get role from participant's identity if it contains role information
+            secondParticipantRole = extractRoleFromIdentity(firstRemoteParticipant.identity)
+        }
+
         // Notify Ionic about the role selection
         TwilioVideoPlugin.getInstance()?.notifyRoleSelected(
             selectedRoleKey: selectedRoleKey,
@@ -586,7 +596,9 @@ class VideoCallViewController: UIViewController {
             role: userRole,
             tenantId: tenantId,
             roomName: roomName,
-            roomSID: room?.sid
+            roomSID: room?.sid,
+            secondParticipantRole: secondParticipantRole,
+            secondParticipantIdentity: secondParticipantIdentity
         )
     }
 
@@ -677,7 +689,9 @@ class VideoCallViewController: UIViewController {
             fullName: fullName,
             selectedRoleKey: selectedRoleKey,
             tenantId: tenantId,
-            role: userRole
+            role: userRole,
+            roomName: roomName,
+            roomSID: room?.sid
         )
 
         // Clear pending role key
@@ -812,6 +826,27 @@ class VideoCallViewController: UIViewController {
                                           self.callState == .connected)
         }
     }
+
+    /**
+     * Extract role from participant identity
+     * Assumes identity format contains role information or returns nil
+     */
+    private func extractRoleFromIdentity(_ identity: String?) -> String? {
+        guard let identity = identity, !identity.isEmpty else { return nil }
+        // If identity contains role information in a known format, extract it
+        // This is a placeholder - implement according to your identity format
+        // For example, if identity is "user@MHT" or "user_MHT" extract "MHT"
+        if identity.contains("@MHT") || identity.hasSuffix("_MHT") {
+            return "MHT"
+        } else if identity.contains("@CCT") || identity.hasSuffix("_CCT") {
+            return "CCT"
+        } else if identity.contains("@Patient") || identity.hasSuffix("_Patient") {
+            return "Patient"
+        } else {
+            return nil // Role information not available in identity
+        }
+    }
+}
 }
 
 // MARK: - Room Delegate

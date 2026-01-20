@@ -117,17 +117,33 @@ public class TwilioVideoPlugin: CAPPlugin {
         print("TwilioVideoPlugin: sendUsersList parsing \(usersArray.count) users")
 
         for (index, userDict) in usersArray.enumerated() {
-            if let id = userDict["id"] as? String, !id.isEmpty,
-               let userId = userDict["user_id"] as? String, !userId.isEmpty,
-               let fullName = userDict["full_name"] as? String, !fullName.isEmpty {
-                print("TwilioVideoPlugin: sendUsersList parsed user: \(fullName)")
+
+            let idValue = userDict["id"]
+            let userIdValue = userDict["user_id"]
+            let fullName = userDict["full_name"] as? String
+
+            let idStr = (idValue as? String) ?? (idValue as? Int).map { String($0) }
+            let userIdStr = (userIdValue as? String) ?? (userIdValue as? Int).map { String($0) }
+
+            if let id = idStr, !id.isEmpty,
+               let userId = userIdStr, !userId.isEmpty,
+               let name = fullName, !name.isEmpty {
+
+                print("TwilioVideoPlugin: sendUsersList parsed user[\(index)]: \(name) (id=\(id), user_id=\(userId))")
+
                 users.append([
                     "id": id,
                     "user_id": userId,
-                    "full_name": fullName
+                    "full_name": name
                 ])
             } else {
-                print("TwilioVideoPlugin: sendUsersList skipping incomplete user at index \(index)")
+                print("""
+                ⚠️ TwilioVideoPlugin: sendUsersList skipping user[\(index)]
+                   raw = \(userDict)
+                   idValue = \(String(describing: idValue))
+                   userIdValue = \(String(describing: userIdValue))
+                   fullName = \(String(describing: fullName))
+                """)
             }
         }
 
@@ -191,13 +207,15 @@ public class TwilioVideoPlugin: CAPPlugin {
         ])
     }
 
-    public func notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?, roomSID: String?) {
+    public func notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?, roomSID: String?, secondParticipantRole: String?, secondParticipantIdentity: String?) {
         var data: [String: Any] = ["selectedRoleKey": selectedRoleKey]
         if let identity = identity { data["identity"] = identity }
         if let role = role { data["role"] = role }
         if let tenantId = tenantId { data["tenantId"] = tenantId }
         if let roomName = roomName { data["roomName"] = roomName }
         if let roomSID = roomSID { data["roomSID"] = roomSID }
+        if let secondParticipantRole = secondParticipantRole { data["secondParticipantRole"] = secondParticipantRole }
+        if let secondParticipantIdentity = secondParticipantIdentity { data["secondParticipantIdentity"] = secondParticipantIdentity }
         notifyListeners("roleSelected", data: data)
     }
 
@@ -208,7 +226,7 @@ public class TwilioVideoPlugin: CAPPlugin {
         ])
     }
 
-    public func notifyUserSelected(id: String, userId: String, fullName: String, selectedRoleKey: String, tenantId: Int?, role: String?) {
+    public func notifyUserSelected(id: String, userId: String, fullName: String, selectedRoleKey: String, tenantId: Int?, role: String?, roomName: String?, roomSID: String?) {
         var data: [String: Any] = [
             "id": id,
             "user_id": userId,
@@ -217,6 +235,8 @@ public class TwilioVideoPlugin: CAPPlugin {
         ]
         if let tenantId = tenantId { data["tenantId"] = tenantId }
         if let role = role { data["role"] = role }
+        if let roomName = roomName { data["roomName"] = roomName }
+        if let roomSID = roomSID { data["roomSID"] = roomSID }
         notifyListeners("userSelected", data: data)
     }
 

@@ -208,7 +208,7 @@ class TwilioVideoPlugin : Plugin() {
         notifyListeners("roomError", data)
     }
 
-    fun notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?, roomSID: String?) {
+    fun notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?, roomSID: String?, secondParticipantRole: String?, secondParticipantIdentity: String?) {
         val data = JSObject()
         data.put("selectedRoleKey", selectedRoleKey)
         if (identity != null) data.put("identity", identity)
@@ -216,6 +216,8 @@ class TwilioVideoPlugin : Plugin() {
         if (tenantId != null) data.put("tenantId", tenantId)
         if (roomName != null) data.put("roomName", roomName)
         if (roomSID != null) data.put("roomSID", roomSID)
+        if (secondParticipantRole != null) data.put("secondParticipantRole", secondParticipantRole)
+        if (secondParticipantIdentity != null) data.put("secondParticipantIdentity", secondParticipantIdentity)
         notifyListeners("roleSelected", data)
     }
 
@@ -226,7 +228,7 @@ class TwilioVideoPlugin : Plugin() {
         notifyListeners("usersListLoaded", data)
     }
 
-    fun notifyUserSelected(id: String, userId: String, fullName: String, selectedRoleKey: String, tenantId: Int?, role: String?) {
+    fun notifyUserSelected(id: String, userId: String, fullName: String, selectedRoleKey: String, tenantId: Int?, role: String?, roomName: String?, roomSID: String?) {
         val data = JSObject()
         data.put("id", id)
         data.put("user_id", userId)
@@ -234,6 +236,8 @@ class TwilioVideoPlugin : Plugin() {
         data.put("selectedRoleKey", selectedRoleKey)
         if (tenantId != null) data.put("tenantId", tenantId)
         if (role != null) data.put("role", role)
+        if (roomName != null) data.put("roomName", roomName)
+        if (roomSID != null) data.put("roomSID", roomSID)
         notifyListeners("userSelected", data)
     }
 

@@ -248,6 +248,16 @@ export interface RoleSelectedEvent {
    * Room SID from Twilio
    */
   roomSID?: string;
+
+  /**
+   * Role of the second participant (first remote participant)
+   */
+  secondParticipantRole?: string;
+
+  /**
+   * Identity of the second participant (first remote participant)
+   */
+  secondParticipantIdentity?: string;
 }
 
 /**
@@ -298,6 +308,16 @@ export interface UserSelectedEvent {
    * User role
    */
   role?: UserRole;
+
+  /**
+   * Connected room name
+   */
+  roomName?: string;
+
+  /**
+   * Connected room SID
+   */
+  roomSID?: string;
 }
 
 /**

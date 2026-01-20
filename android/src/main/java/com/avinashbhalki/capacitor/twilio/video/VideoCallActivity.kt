@@ -502,6 +502,23 @@ class VideoCallActivity : AppCompatActivity() {
         room = Video.connect(this, connectOptions)
     }
 
+    /**
+     * Extract role from participant identity
+     * Assumes identity format contains role information or returns null
+     */
+    private fun extractRoleFromIdentity(identity: String?): String? {
+        if (identity.isNullOrEmpty()) return null
+        // If identity contains role information in a known format, extract it
+        // This is a placeholder - implement according to your identity format
+        // For example, if identity is "user@MHT" or "user_MHT" extract "MHT"
+        return when {
+            identity.contains("@MHT") || identity.endsWith("_MHT") -> "MHT"
+            identity.contains("@CCT") || identity.endsWith("_CCT") -> "CCT"
+            identity.contains("@Patient") || identity.endsWith("_Patient") -> "Patient"
+            else -> null // Role information not available in identity
+        }
+    }
+
     private val roomListener = object : Room.Listener {
         override fun onConnected(room: Room) {
             Log.d(TAG, "Connected to room: ${room.name}")
@@ -1193,6 +1210,16 @@ class VideoCallActivity : AppCompatActivity() {
     private fun handleRoleSelection(selectedRoleKey: String) {
         pendingRoleKey = selectedRoleKey
 
+        // Get second participant role and identity (first remote participant)
+        var secondParticipantRole: String? = null
+        var secondParticipantIdentity: String? = null
+        if (remoteParticipants.isNotEmpty()) {
+            val firstRemoteParticipant = remoteParticipants.first()
+            secondParticipantIdentity = firstRemoteParticipant.identity
+            // Get role from participant's identity if it contains role information
+            secondParticipantRole = extractRoleFromIdentity(firstRemoteParticipant.identity)
+        }
+
         // Notify Ionic about the role selection
         TwilioVideoPlugin.getInstance()?.notifyRoleSelected(
             selectedRoleKey,
@@ -1200,7 +1227,9 @@ class VideoCallActivity : AppCompatActivity() {
             userRole,
             tenantId,
             roomName,
-            room?.sid
+            room?.sid,
+            secondParticipantRole,
+            secondParticipantIdentity
         )
     }
 
@@ -1296,7 +1325,9 @@ class VideoCallActivity : AppCompatActivity() {
             fullName,
             selectedRoleKey,
             tenantId,
-            userRole
+            userRole,
+            roomName,
+            room?.sid
         )
 
         // Clear pending role key

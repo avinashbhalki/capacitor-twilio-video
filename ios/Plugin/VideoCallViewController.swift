@@ -582,7 +582,7 @@ class VideoCallViewController: UIViewController {
         // Get second participant role and identity (first remote participant)
         var secondParticipantRole: String? = nil
         var secondParticipantIdentity: String? = nil
-        if !remoteParticipants.isEmpty {
+        if let remoteParticipants = room?.remoteParticipants, !remoteParticipants.isEmpty {
             let firstRemoteParticipant = remoteParticipants.first!
             secondParticipantIdentity = firstRemoteParticipant.identity
             // Get role from participant's identity if it contains role information
@@ -846,7 +846,6 @@ class VideoCallViewController: UIViewController {
             return nil // Role information not available in identity
         }
     }
-}
 }
 
 // MARK: - Room Delegate

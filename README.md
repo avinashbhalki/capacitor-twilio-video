@@ -19,6 +19,13 @@ This enhanced version includes significant fixes and improvements:
 - **Audio routing aware** - speaker button respects Bluetooth priority
 - **State persistence** across orientation and lifecycle events
 
+### 🎯 **New Role-Based Features**
+- **Top-left action button** with smart visibility rules
+- **Role selection popup** with MHT/CCT/Patient/Participants options
+- **Dynamic user list integration** via two-way Ionic bridge
+- **Role-based UI behavior** and participant count restrictions
+- **Comprehensive event system** for role and user selection
+
 ### 🔊 **Production-Grade Audio Routing**
 - **Full Bluetooth headset support** (HFP/A2DP/LE)
 - **Automatic priority**: Bluetooth > Wired Headset > Speaker/Earpiece
@@ -44,6 +51,8 @@ This enhanced version includes significant fixes and improvements:
 - ✅ **Pinned Twilio SDK versions** for stability
 - ✅ **Robust multi-participant rendering** (3+ users, no flicker)
 - ✅ **Thumbnail grid with selection** - tap any participant to focus
+- ✅ **Role-based action button** with smart visibility and popup system
+- ✅ **Two-way Ionic bridge** for role selection and user list integration
 - ✅ **Production-grade call state machine**
 - ✅ **Comprehensive Bluetooth audio support**
 - ✅ **Enhanced UI button states** with clear visual feedback
@@ -125,6 +134,40 @@ All media operations (`muteAudio`, `enableVideo`, `flipCamera`, `setSpeaker`) ar
 ### Audio Session Configuration
 **iOS**: `playAndRecord` + `videoChat` + `allowBluetooth` + `allowBluetoothA2DP`
 **Android**: `MODE_IN_COMMUNICATION` + automatic SCO + Bluetooth receiver
+
+## Role-Based Features
+
+### Top-Left Action Button
+- **Circular button** positioned in the top-left of the video call UI
+- **Smart visibility**: Only shown when participant count < 3 AND role is "mht" or "cct"
+- **Dynamic behavior**: Appears/disappears as participants join/leave
+- **Safe area compliant**: Respects iOS notch and Android status bar
+
+### Role Selection System
+- **First popup**: Choose from MHT, CCT, Patient, or Participants
+- **Ionic integration**: `roleSelected` event triggered with selection details
+- **Two-way bridge**: Ionic sends user list back via `sendUsersList()` method
+- **Second popup**: Display users with full names for selection
+- **Event-driven**: All interactions emit typed events to Ionic layer
+
+### Supported Roles
+- **mht**: Medical Health Technician - can access action button
+- **cct**: Critical Care Technician - can access action button
+- **patient**: Patient role - action button hidden
+- **participant**: Generic participant option in selection
+
+### Event Flow
+1. User taps action button → `roleSelected` event emitted
+2. Ionic receives event, makes API call, sends response via `sendUsersList()`
+3. Plugin shows second popup with user list → `usersListLoaded` event emitted
+4. User selects from list → `userSelected` event emitted
+5. Ionic receives final selection with full user details
+
+### Error Handling
+- **Empty user lists**: Shows "No data available" message
+- **Popup dismissal**: `popupDismissed` events with reason
+- **Network errors**: `popupError` events for debugging
+- **Validation**: Role keys and user data validated on both ends
 
 ## Documentation
 
@@ -226,6 +269,9 @@ async function joinVideoCall() {
     await TwilioVideo.joinRoom({
       roomName: 'my-room',
       token: 'your-twilio-access-token',
+      identity: 'Dr. Smith',           // Optional: User display name
+      role: 'mht',                     // Optional: User role (mht, cct, patient)
+      tenantId: 12345                  // Optional: Tenant identifier
     });
   } catch (error) {
     console.error('Failed to join room:', error);
@@ -371,6 +417,145 @@ TwilioVideo.addListener('dominantSpeakerChanged', (event) => {
   }
 });
 ```
+
+### Role-Based Events
+
+The plugin provides comprehensive events for role selection and user management:
+
+```typescript
+// Role selection flow
+TwilioVideo.addListener('roleSelected', async (event) => {
+  console.log('🎭 Role selected:', event.selectedRoleKey);
+  console.log('User details:', {
+    identity: event.identity,
+    role: event.role,
+    tenantId: event.tenantId,
+    roomName: event.roomName
+  });
+
+  try {
+    // Make API call to fetch users for the selected role
+    const response = await fetch(`/api/users/${event.selectedRoleKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tenantId: event.tenantId,
+        roleKey: event.selectedRoleKey
+      })
+    });
+
+    const users = await response.json();
+
+    // Send the users list back to the plugin
+    await TwilioVideo.sendUsersList({
+      selectedRoleKey: event.selectedRoleKey,
+      users: users // Array of { id, user_id, full_name }
+    });
+
+  } catch (error) {
+    console.error('Failed to fetch users:', error);
+    // Plugin will show empty list dialog
+    await TwilioVideo.sendUsersList({
+      selectedRoleKey: event.selectedRoleKey,
+      users: []
+    });
+  }
+});
+
+// User list loaded and displayed
+TwilioVideo.addListener('usersListLoaded', (event) => {
+  console.log(`📋 Users list loaded: ${event.userCount} users for ${event.selectedRoleKey}`);
+  // Optional: Track analytics or update loading states
+});
+
+// Final user selection
+TwilioVideo.addListener('userSelected', (event) => {
+  console.log('👤 User selected:', {
+    id: event.id,
+    userId: event.user_id,
+    fullName: event.full_name,
+    role: event.selectedRoleKey,
+    tenantId: event.tenantId
+  });
+
+  // Handle the user selection (e.g., initiate invitation, update database)
+  handleUserInvitation(event);
+});
+
+// Popup lifecycle events
+TwilioVideo.addListener('popupDismissed', (event) => {
+  console.log(`❌ ${event.popupType} popup dismissed: ${event.reason}`);
+  // Handle user cancellation
+});
+
+TwilioVideo.addListener('popupError', (event) => {
+  console.error(`💥 ${event.popupType} popup error:`, event.message);
+  // Handle popup display errors
+});
+```
+
+### Complete Role Integration Example
+
+```typescript
+class VideoCallService {
+  private setupRoleBasedEvents() {
+    // Handle role selection with proper error handling
+    TwilioVideo.addListener('roleSelected', async (event) => {
+      this.showLoadingIndicator();
+
+      try {
+        const users = await this.fetchUsersForRole(event.selectedRoleKey, event.tenantId);
+
+        await TwilioVideo.sendUsersList({
+          selectedRoleKey: event.selectedRoleKey,
+          users: users
+        });
+
+      } catch (error) {
+        console.error('Role selection failed:', error);
+        // Send empty list to show "No data available"
+        await TwilioVideo.sendUsersList({
+          selectedRoleKey: event.selectedRoleKey,
+          users: []
+        });
+      } finally {
+        this.hideLoadingIndicator();
+      }
+    });
+
+    // Handle final user selection
+    TwilioVideo.addListener('userSelected', async (event) => {
+      console.log('Inviting user to call:', event.full_name);
+
+      try {
+        await this.inviteUserToCall({
+          userId: event.user_id,
+          roleKey: event.selectedRoleKey,
+          tenantId: event.tenantId
+        });
+
+        this.showSuccessMessage(`Invited ${event.full_name} to the call`);
+
+      } catch (error) {
+        this.showErrorMessage(`Failed to invite ${event.full_name}`);
+      }
+    });
+  }
+
+  private async fetchUsersForRole(roleKey: string, tenantId: number) {
+    const response = await fetch('/api/call-participants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roleKey, tenantId })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return await response.json();
+  }
+}
 });
 ```
 
@@ -537,8 +722,22 @@ Join a Twilio Video room and display the full-screen UI.
 - `options.token` (string, required): Twilio access token
 - `options.roomName` (string, optional): Room name
 - `options.roomId` (string, optional): Room ID
+- `options.identity` (string, optional): User display name/identity
+- `options.role` (string, optional): User role - one of "mht", "cct", "patient"
+- `options.tenantId` (number, optional): Tenant identifier for multi-tenancy
 
 Either `roomName` or `roomId` must be provided.
+
+**Example:**
+```typescript
+await TwilioVideo.joinRoom({
+  token: 'eyJhbGc...',
+  roomName: 'consultation-room-123',
+  identity: 'Dr. Sarah Smith',
+  role: 'mht',
+  tenantId: 45678
+});
+```
 
 #### `leaveRoom(): Promise<void>`
 
@@ -560,6 +759,30 @@ Flip between front and back camera.
 
 Toggle between speaker and earpiece audio output.
 
+#### `sendUsersList(options: SendUsersListOptions): Promise<void>`
+
+Send users list back to the plugin after receiving a `roleSelected` event.
+
+**Parameters:**
+- `options.selectedRoleKey` (string, required): The role key from roleSelected event
+- `options.users` (User[], required): Array of user objects
+
+**User Object:**
+- `id` (string): Unique identifier
+- `user_id` (string): User ID
+- `full_name` (string): Full display name
+
+**Example:**
+```typescript
+await TwilioVideo.sendUsersList({
+  selectedRoleKey: 'mht',
+  users: [
+    { id: '1', user_id: 'u001', full_name: 'Dr. Smith' },
+    { id: '2', user_id: 'u002', full_name: 'Dr. Johnson' }
+  ]
+});
+```
+
 ### Events
 
 | Event | Payload | Description |
@@ -572,6 +795,11 @@ Toggle between speaker and earpiece audio output.
 | `dominantSpeakerChanged` | `{ identity: string \| null }` | Dominant speaker changed |
 | `roomAutoClosed` | `{ reason: string }` | Room auto-closed |
 | `roomError` | `{ code: string, message: string, isFatal: boolean }` | Room error occurred |
+| `roleSelected` | `{ selectedRoleKey: string, identity?: string, role?: string, tenantId?: number, roomName?: string }` | User selected a role from action button |
+| `usersListLoaded` | `{ selectedRoleKey: string, userCount: number }` | Users list loaded and popup shown |
+| `userSelected` | `{ id: string, user_id: string, full_name: string, selectedRoleKey: string, tenantId?: number, role?: string }` | User selected from users list |
+| `popupDismissed` | `{ popupType: string, reason: string }` | Role or user popup dismissed |
+| `popupError` | `{ message: string, popupType: string }` | Error displaying popup |
 
 ## Error Handling
 

@@ -71,6 +71,7 @@ class VideoCallActivity : AppCompatActivity() {
     private lateinit var flipButton: ImageButton
     private lateinit var speakerButton: ImageButton
     private lateinit var hangupButton: ImageButton
+    private lateinit var roleActionButton: ImageButton // Top-left action button
 
     // Twilio Video
     private var room: Room? = null
@@ -87,7 +88,25 @@ class VideoCallActivity : AppCompatActivity() {
     private var currentAudioRoute: AudioRoute = AudioRoute.SPEAKER
     private var accessToken: String? = null
     private var roomName: String? = null
+    private var userIdentity: String? = null
+    private var userRole: String? = null
+    private var tenantId: Int? = null
     private var remoteParticipantCount = 0
+
+    // Role selection and user list management
+    private var pendingRoleKey: String? = null
+    private var roleSelectionDialog: androidx.appcompat.app.AlertDialog? = null
+    private var userListDialog: androidx.appcompat.app.AlertDialog? = null
+
+    // Extended properties for new functionality
+    private var userIdentity: String? = null
+    private var userRole: String? = null
+    private var tenantId: Int? = null
+
+    // Role selection and user list management
+    private var pendingRoleKey: String? = null
+    private var roleSelectionDialog: androidx.appcompat.app.AlertDialog? = null
+    private var userListDialog: androidx.appcompat.app.AlertDialog? = null
 
     // Participant Rendering Manager
     private val participantRenderers = mutableMapOf<String, ParticipantRenderer>()
@@ -111,6 +130,9 @@ class VideoCallActivity : AppCompatActivity() {
 
         accessToken = intent.getStringExtra("token")
         roomName = intent.getStringExtra("roomName")
+        userIdentity = intent.getStringExtra("identity")
+        userRole = intent.getStringExtra("role")
+        tenantId = intent.getIntExtra("tenantId", -1).takeIf { it != -1 }
 
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -158,6 +180,26 @@ class VideoCallActivity : AppCompatActivity() {
             }
         }
         rootLayout.addView(thumbnailGridContainer)
+
+        // Top-left action button (role selection)
+        val actionButtonSize = (48 * resources.displayMetrics.density).toInt()
+        val actionButtonMargin = (16 * resources.displayMetrics.density).toInt()
+
+        roleActionButton = ImageButton(this).apply {
+            layoutParams = FrameLayout.LayoutParams(actionButtonSize, actionButtonSize).apply {
+                gravity = Gravity.TOP or Gravity.START
+                setMargins(actionButtonMargin, actionButtonMargin * 3, 0, 0)
+            }
+            setImageResource(android.R.drawable.ic_menu_add)
+            backgroundTintList = ColorStateList.valueOf(Color.parseColor("#88000000"))
+            imageTintList = ColorStateList.valueOf(Color.WHITE)
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Role Options"
+            visibility = View.GONE // Initially hidden, will be shown based on conditions
+            setOnClickListener { showRoleSelectionDialog() }
+        }
+        rootLayout.addView(roleActionButton)
 
         // Local video thumbnail (always at top of grid)
         localThumbnailView = VideoView(this).apply {
@@ -482,6 +524,9 @@ class VideoCallActivity : AppCompatActivity() {
 
             // Update UI to reflect connected state
             updateButtonStates()
+
+            // Initialize action button visibility
+            updateActionButtonVisibility()
         }
 
         override fun onReconnecting(room: Room, twilioException: TwilioException) {
@@ -578,6 +623,9 @@ class VideoCallActivity : AppCompatActivity() {
 
         Log.d(TAG, "Added remote participant: ${participant.identity}, total: $remoteParticipantCount")
 
+        // Update action button visibility
+        updateActionButtonVisibility()
+
         // Subscribe to existing published video tracks
         participant.remoteVideoTracks.forEach { publication ->
             if (publication.isTrackSubscribed) {
@@ -598,6 +646,9 @@ class VideoCallActivity : AppCompatActivity() {
         remoteParticipantCount--
 
         Log.d(TAG, "Removing participant: ${participant.identity}, remaining: $remoteParticipantCount")
+
+        // Update action button visibility
+        updateActionButtonVisibility()
 
         // Unsubscribe from video tracks
         participant.remoteVideoTracks.forEach { publication ->
@@ -1105,6 +1156,143 @@ class VideoCallActivity : AppCompatActivity() {
         setSpeaker(currentAudioRoute != AudioRoute.SPEAKER)
     }
 
+    // ===== Role Selection and User List Management =====
+
+    private fun updateActionButtonVisibility() {
+        val shouldShow = remoteParticipantCount < 2 &&
+                        (userRole == "mht" || userRole == "cct")
+
+        runOnUiThread {
+            roleActionButton.visibility = if (shouldShow) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun showRoleSelectionDialog() {
+        // Dismiss any existing dialogs
+        roleSelectionDialog?.dismiss()
+        userListDialog?.dismiss()
+
+        val options = arrayOf("MHT", "CCT", "Patient", "Participants")
+        val roleKeys = arrayOf("mht", "cct", "patient", "participant")
+
+        try {
+            val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
+                .setTitle("Select Role")
+                .setItems(options) { dialog, which ->
+                    val selectedRoleKey = roleKeys[which]
+                    handleRoleSelection(selectedRoleKey)
+                    dialog.dismiss()
+                }
+                .setOnCancelListener {
+                    TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("role", "cancelled")
+                }
+
+            roleSelectionDialog = dialogBuilder.create()
+            roleSelectionDialog?.show()
+
+        } catch (e: Exception) {
+            TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show role selection dialog: ${e.message}", "role")
+        }
+    }
+
+    private fun handleRoleSelection(selectedRoleKey: String) {
+        pendingRoleKey = selectedRoleKey
+
+        // Notify Ionic about the role selection
+        TwilioVideoPlugin.getInstance()?.notifyRoleSelected(
+            selectedRoleKey,
+            userIdentity,
+            userRole,
+            tenantId,
+            roomName
+        )
+    }
+
+    fun handleUsersList(selectedRoleKey: String, users: List<Map<String, String>>) {
+        if (selectedRoleKey != pendingRoleKey) {
+            TwilioVideoPlugin.getInstance()?.notifyPopupError("Role key mismatch", "userList")
+            return
+        }
+
+        runOnUiThread {
+            // Dismiss any existing user list dialog
+            userListDialog?.dismiss()
+
+            // Notify that users list is loaded
+            TwilioVideoPlugin.getInstance()?.notifyUsersListLoaded(selectedRoleKey, users.size)
+
+            if (users.isEmpty()) {
+                showEmptyUserListDialog(selectedRoleKey)
+            } else {
+                showUserSelectionDialog(selectedRoleKey, users)
+            }
+        }
+    }
+
+    private fun showEmptyUserListDialog(selectedRoleKey: String) {
+        try {
+            val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
+                .setTitle("No Users Available")
+                .setMessage("No data available for the selected role.")
+                .setPositiveButton("OK") { dialog, _ ->
+                    dialog.dismiss()
+                }
+                .setOnCancelListener {
+                    TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("userList", "cancelled")
+                }
+
+            userListDialog = dialogBuilder.create()
+            userListDialog?.show()
+
+        } catch (e: Exception) {
+            TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show empty user list dialog: ${e.message}", "userList")
+        }
+    }
+
+    private fun showUserSelectionDialog(selectedRoleKey: String, users: List<Map<String, String>>) {
+        try {
+            val userNames = users.map { it["full_name"] ?: "Unknown User" }.toTypedArray()
+
+            val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
+                .setTitle("Select User")
+                .setItems(userNames) { dialog, which ->
+                    if (which < users.size) {
+                        val selectedUser = users[which]
+                        handleUserSelection(selectedUser, selectedRoleKey)
+                    }
+                    dialog.dismiss()
+                }
+                .setOnCancelListener {
+                    TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("userList", "cancelled")
+                }
+
+            userListDialog = dialogBuilder.create()
+            userListDialog?.show()
+
+        } catch (e: Exception) {
+            TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show user selection dialog: ${e.message}", "userList")
+        }
+    }
+
+    private fun handleUserSelection(selectedUser: Map<String, String>, selectedRoleKey: String) {
+        val id = selectedUser["id"] ?: ""
+        val userId = selectedUser["user_id"] ?: ""
+        val fullName = selectedUser["full_name"] ?: ""
+
+        // Notify Ionic about the user selection
+        TwilioVideoPlugin.getInstance()?.notifyUserSelected(
+            id,
+            userId,
+            fullName,
+            selectedRoleKey,
+            tenantId,
+            userRole
+        )
+
+        // Clear pending role key
+        pendingRoleKey = null
+    }
+
     private fun cleanup() {
         Log.d(TAG, "Cleaning up resources")
 
@@ -1166,6 +1354,16 @@ class VideoCallActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         Log.d(TAG, "Activity destroyed")
+
+        // Dismiss any open dialogs
+        roleSelectionDialog?.dismiss()
+        userListDialog?.dismiss()
+
+        // Clear references
+        roleSelectionDialog = null
+        userListDialog = null
+        pendingRoleKey = null
+
         cleanup()
         instance = null
 

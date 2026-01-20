@@ -35,6 +35,9 @@ class TwilioVideoPlugin : Plugin() {
         val token = call.getString("token")
         val roomName = call.getString("roomName")
         val roomId = call.getString("roomId")
+        val identity = call.getString("identity")
+        val role = call.getString("role")
+        val tenantId = call.getInt("tenantId")
 
         if (token == null || token.isEmpty()) {
             call.reject("Token is required")
@@ -46,9 +49,20 @@ class TwilioVideoPlugin : Plugin() {
             return
         }
 
+        // Validate role if provided
+        if (role != null && !listOf("mht", "cct", "patient").contains(role)) {
+            call.reject("Invalid role. Allowed values: mht, cct, patient")
+            return
+        }
+
         val intent = Intent(activity, VideoCallActivity::class.java)
         intent.putExtra("token", token)
         intent.putExtra("roomName", roomName ?: roomId)
+        intent.putExtra("identity", identity)
+        intent.putExtra("role", role)
+        if (tenantId != null) {
+            intent.putExtra("tenantId", tenantId)
+        }
 
         activity.startActivity(intent)
         call.resolve()
@@ -84,6 +98,47 @@ class TwilioVideoPlugin : Plugin() {
     fun setSpeaker(call: PluginCall) {
         val enabled = call.getBoolean("enabled", true) ?: true
         VideoCallActivity.getInstance()?.setSpeaker(enabled)
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun sendUsersList(call: PluginCall) {
+        val selectedRoleKey = call.getString("selectedRoleKey")
+        val usersArray = call.getArray("users")
+
+        if (selectedRoleKey == null || selectedRoleKey.isEmpty()) {
+            call.reject("selectedRoleKey is required")
+            return
+        }
+
+        if (!listOf("mht", "cct", "patient", "participant").contains(selectedRoleKey)) {
+            call.reject("Invalid selectedRoleKey. Allowed values: mht, cct, patient, participant")
+            return
+        }
+
+        val users = mutableListOf<Map<String, String>>()
+        if (usersArray != null) {
+            for (i in 0 until usersArray.length()) {
+                try {
+                    val userObj = usersArray.getJSONObject(i)
+                    val id = userObj.optString("id", "")
+                    val userId = userObj.optString("user_id", "")
+                    val fullName = userObj.optString("full_name", "")
+
+                    if (id.isNotEmpty() && userId.isNotEmpty() && fullName.isNotEmpty()) {
+                        users.add(mapOf(
+                            "id" to id,
+                            "user_id" to userId,
+                            "full_name" to fullName
+                        ))
+                    }
+                } catch (e: Exception) {
+                    // Skip invalid user objects
+                }
+            }
+        }
+
+        VideoCallActivity.getInstance()?.handleUsersList(selectedRoleKey, users)
         call.resolve()
     }
 
@@ -140,5 +195,47 @@ class TwilioVideoPlugin : Plugin() {
         data.put("message", message)
         data.put("isFatal", isFatal)
         notifyListeners("roomError", data)
+    }
+
+    fun notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?) {
+        val data = JSObject()
+        data.put("selectedRoleKey", selectedRoleKey)
+        if (identity != null) data.put("identity", identity)
+        if (role != null) data.put("role", role)
+        if (tenantId != null) data.put("tenantId", tenantId)
+        if (roomName != null) data.put("roomName", roomName)
+        notifyListeners("roleSelected", data)
+    }
+
+    fun notifyUsersListLoaded(selectedRoleKey: String, userCount: Int) {
+        val data = JSObject()
+        data.put("selectedRoleKey", selectedRoleKey)
+        data.put("userCount", userCount)
+        notifyListeners("usersListLoaded", data)
+    }
+
+    fun notifyUserSelected(id: String, userId: String, fullName: String, selectedRoleKey: String, tenantId: Int?, role: String?) {
+        val data = JSObject()
+        data.put("id", id)
+        data.put("user_id", userId)
+        data.put("full_name", fullName)
+        data.put("selectedRoleKey", selectedRoleKey)
+        if (tenantId != null) data.put("tenantId", tenantId)
+        if (role != null) data.put("role", role)
+        notifyListeners("userSelected", data)
+    }
+
+    fun notifyPopupDismissed(popupType: String, reason: String) {
+        val data = JSObject()
+        data.put("popupType", popupType)
+        data.put("reason", reason)
+        notifyListeners("popupDismissed", data)
+    }
+
+    fun notifyPopupError(message: String, popupType: String) {
+        val data = JSObject()
+        data.put("message", message)
+        data.put("popupType", popupType)
+        notifyListeners("popupError", data)
     }
 }

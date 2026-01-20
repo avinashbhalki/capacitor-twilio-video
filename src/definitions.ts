@@ -1,6 +1,16 @@
 import { PluginListenerHandle } from '@capacitor/core';
 
 /**
+ * User role types for video calls
+ */
+export type UserRole = 'mht' | 'cct' | 'patient';
+
+/**
+ * Role selection keys for popups
+ */
+export type RoleSelectionKey = 'mht' | 'cct' | 'patient' | 'participant';
+
+/**
  * Options for joining a Twilio Video room
  */
 export interface JoinRoomOptions {
@@ -18,6 +28,56 @@ export interface JoinRoomOptions {
    * Access token for Twilio Video authentication (required)
    */
   token: string;
+
+  /**
+   * User display name/identity (optional)
+   */
+  identity?: string;
+
+  /**
+   * User role for controlling UI behavior (optional)
+   */
+  role?: UserRole;
+
+  /**
+   * Tenant identifier for multi-tenancy support (optional)
+   */
+  tenantId?: number;
+}
+
+/**
+ * User object structure for sendUsersList
+ */
+export interface User {
+  /**
+   * Unique identifier
+   */
+  id: string;
+
+  /**
+   * User ID
+   */
+  user_id: string;
+
+  /**
+   * Full display name
+   */
+  full_name: string;
+}
+
+/**
+ * Options for sending users list back to plugin
+ */
+export interface SendUsersListOptions {
+  /**
+   * The selected role key from the first popup
+   */
+  selectedRoleKey: RoleSelectionKey;
+
+  /**
+   * Array of users to display in the second popup
+   */
+  users: User[];
 }
 
 /**
@@ -156,6 +216,116 @@ export interface RoomErrorEvent {
 }
 
 /**
+ * Event payload when a role is selected from the first popup
+ */
+export interface RoleSelectedEvent {
+  /**
+   * The selected role key
+   */
+  selectedRoleKey: RoleSelectionKey;
+
+  /**
+   * User identity
+   */
+  identity?: string;
+
+  /**
+   * User role
+   */
+  role?: UserRole;
+
+  /**
+   * Tenant ID
+   */
+  tenantId?: number;
+
+  /**
+   * Room name
+   */
+  roomName?: string;
+}
+
+/**
+ * Event payload when users list is loaded and second popup is shown
+ */
+export interface UsersListLoadedEvent {
+  /**
+   * The role key for which users are loaded
+   */
+  selectedRoleKey: RoleSelectionKey;
+
+  /**
+   * Number of users in the list
+   */
+  userCount: number;
+}
+
+/**
+ * Event payload when a user is selected from the second popup
+ */
+export interface UserSelectedEvent {
+  /**
+   * Selected user ID
+   */
+  id: string;
+
+  /**
+   * Selected user's user_id
+   */
+  user_id: string;
+
+  /**
+   * Selected user's full name
+   */
+  full_name: string;
+
+  /**
+   * The role key for which this user was selected
+   */
+  selectedRoleKey: RoleSelectionKey;
+
+  /**
+   * Tenant ID
+   */
+  tenantId?: number;
+
+  /**
+   * User role
+   */
+  role?: UserRole;
+}
+
+/**
+ * Event payload when popup is dismissed without selection
+ */
+export interface PopupDismissedEvent {
+  /**
+   * Which popup was dismissed ('role' or 'userList')
+   */
+  popupType: 'role' | 'userList';
+
+  /**
+   * Reason for dismissal ('cancelled' or 'backPressed')
+   */
+  reason: 'cancelled' | 'backPressed';
+}
+
+/**
+ * Event payload for popup errors
+ */
+export interface PopupErrorEvent {
+  /**
+   * Error message
+   */
+  message: string;
+
+  /**
+   * Which popup had the error ('role' or 'userList')
+   */
+  popupType: 'role' | 'userList';
+}
+
+/**
  * Capacitor Twilio Video Plugin Interface
  */
 export interface TwilioVideoPlugin {
@@ -237,6 +407,24 @@ export interface TwilioVideoPlugin {
    * ```
    */
   setSpeaker(options: SetSpeakerOptions): Promise<void>;
+
+  /**
+   * Send users list back to the plugin after receiving roleSelected event
+   *
+   * @param options - Users list options
+   * @returns Promise that resolves when the users list is processed
+   *
+   * @example
+   * ```typescript
+   * await TwilioVideo.sendUsersList({
+   *   selectedRoleKey: 'mht',
+   *   users: [
+   *     { id: '1', user_id: 'u1', full_name: 'Dr. Smith' }
+   *   ]
+   * });
+   * ```
+   */
+  sendUsersList(options: SendUsersListOptions): Promise<void>;
 
   /**
    * Listen for room connection events
@@ -332,6 +520,66 @@ export interface TwilioVideoPlugin {
   addListener(
     eventName: 'roomError',
     listenerFunc: (event: RoomErrorEvent) => void,
+  ): Promise<PluginListenerHandle> & PluginListenerHandle;
+
+  /**
+   * Listen for role selection events
+   *
+   * @param eventName - 'roleSelected'
+   * @param listenerFunc - Callback function
+   * @returns Promise with PluginListenerHandle to remove the listener
+   */
+  addListener(
+    eventName: 'roleSelected',
+    listenerFunc: (event: RoleSelectedEvent) => void,
+  ): Promise<PluginListenerHandle> & PluginListenerHandle;
+
+  /**
+   * Listen for users list loaded events
+   *
+   * @param eventName - 'usersListLoaded'
+   * @param listenerFunc - Callback function
+   * @returns Promise with PluginListenerHandle to remove the listener
+   */
+  addListener(
+    eventName: 'usersListLoaded',
+    listenerFunc: (event: UsersListLoadedEvent) => void,
+  ): Promise<PluginListenerHandle> & PluginListenerHandle;
+
+  /**
+   * Listen for user selection events
+   *
+   * @param eventName - 'userSelected'
+   * @param listenerFunc - Callback function
+   * @returns Promise with PluginListenerHandle to remove the listener
+   */
+  addListener(
+    eventName: 'userSelected',
+    listenerFunc: (event: UserSelectedEvent) => void,
+  ): Promise<PluginListenerHandle> & PluginListenerHandle;
+
+  /**
+   * Listen for popup dismissed events
+   *
+   * @param eventName - 'popupDismissed'
+   * @param listenerFunc - Callback function
+   * @returns Promise with PluginListenerHandle to remove the listener
+   */
+  addListener(
+    eventName: 'popupDismissed',
+    listenerFunc: (event: PopupDismissedEvent) => void,
+  ): Promise<PluginListenerHandle> & PluginListenerHandle;
+
+  /**
+   * Listen for popup error events
+   *
+   * @param eventName - 'popupError'
+   * @param listenerFunc - Callback function
+   * @returns Promise with PluginListenerHandle to remove the listener
+   */
+  addListener(
+    eventName: 'popupError',
+    listenerFunc: (event: PopupErrorEvent) => void,
   ): Promise<PluginListenerHandle> & PluginListenerHandle;
 
   /**

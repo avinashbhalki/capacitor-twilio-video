@@ -32,10 +32,23 @@ public class TwilioVideoPlugin: CAPPlugin {
             return
         }
 
+        let identity = call.getString("identity")
+        let role = call.getString("role")
+        let tenantId = call.getInt("tenantId")
+
+        // Validate role if provided
+        if let role = role, !["mht", "cct", "patient"].contains(role) {
+            call.reject("Invalid role. Allowed values: mht, cct, patient")
+            return
+        }
+
         DispatchQueue.main.async {
             let vc = VideoCallViewController()
             vc.accessToken = token
             vc.roomName = room
+            vc.userIdentity = identity
+            vc.userRole = role
+            vc.tenantId = tenantId
             vc.modalPresentationStyle = .fullScreen
 
             self.bridge?.viewController?.present(vc, animated: true, completion: nil)
@@ -80,6 +93,39 @@ public class TwilioVideoPlugin: CAPPlugin {
         DispatchQueue.main.async {
             self.videoViewController?.setSpeaker(enabled: enabled)
         }
+        call.resolve()
+    }
+
+    @objc func sendUsersList(_ call: CAPPluginCall) {
+        guard let selectedRoleKey = call.getString("selectedRoleKey"), !selectedRoleKey.isEmpty else {
+            call.reject("selectedRoleKey is required")
+            return
+        }
+
+        guard ["mht", "cct", "patient", "participant"].contains(selectedRoleKey) else {
+            call.reject("Invalid selectedRoleKey. Allowed values: mht, cct, patient, participant")
+            return
+        }
+
+        let usersArray = call.getArray("users") as? [[String: Any]] ?? []
+        var users: [[String: String]] = []
+
+        for userDict in usersArray {
+            if let id = userDict["id"] as? String, !id.isEmpty,
+               let userId = userDict["user_id"] as? String, !userId.isEmpty,
+               let fullName = userDict["full_name"] as? String, !fullName.isEmpty {
+                users.append([
+                    "id": id,
+                    "user_id": userId,
+                    "full_name": fullName
+                ])
+            }
+        }
+
+        DispatchQueue.main.async {
+            self.videoViewController?.handleUsersList(selectedRoleKey: selectedRoleKey, users: users)
+        }
+
         call.resolve()
     }
 
@@ -131,6 +177,48 @@ public class TwilioVideoPlugin: CAPPlugin {
             "code": code,
             "message": message,
             "isFatal": isFatal
+        ])
+    }
+
+    public func notifyRoleSelected(selectedRoleKey: String, identity: String?, role: String?, tenantId: Int?, roomName: String?) {
+        var data: [String: Any] = ["selectedRoleKey": selectedRoleKey]
+        if let identity = identity { data["identity"] = identity }
+        if let role = role { data["role"] = role }
+        if let tenantId = tenantId { data["tenantId"] = tenantId }
+        if let roomName = roomName { data["roomName"] = roomName }
+        notifyListeners("roleSelected", data: data)
+    }
+
+    public func notifyUsersListLoaded(selectedRoleKey: String, userCount: Int) {
+        notifyListeners("usersListLoaded", data: [
+            "selectedRoleKey": selectedRoleKey,
+            "userCount": userCount
+        ])
+    }
+
+    public func notifyUserSelected(id: String, userId: String, fullName: String, selectedRoleKey: String, tenantId: Int?, role: String?) {
+        var data: [String: Any] = [
+            "id": id,
+            "user_id": userId,
+            "full_name": fullName,
+            "selectedRoleKey": selectedRoleKey
+        ]
+        if let tenantId = tenantId { data["tenantId"] = tenantId }
+        if let role = role { data["role"] = role }
+        notifyListeners("userSelected", data: data)
+    }
+
+    public func notifyPopupDismissed(popupType: String, reason: String) {
+        notifyListeners("popupDismissed", data: [
+            "popupType": popupType,
+            "reason": reason
+        ])
+    }
+
+    public func notifyPopupError(message: String, popupType: String) {
+        notifyListeners("popupError", data: [
+            "message": message,
+            "popupType": popupType
         ])
     }
 }

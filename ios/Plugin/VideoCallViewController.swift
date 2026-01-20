@@ -32,6 +32,9 @@ class VideoCallViewController: UIViewController {
     // MARK: - Properties
     var accessToken: String?
     var roomName: String?
+    var userIdentity: String?
+    var userRole: String?
+    var tenantId: Int?
 
     private var room: Room?
     private var localParticipant: LocalParticipant?
@@ -48,6 +51,7 @@ class VideoCallViewController: UIViewController {
     private var thumbnailGridContainer: UIStackView!
     private var localThumbnailView: VideoView!
     private var controlsContainer: UIView!
+    private var roleActionButton: UIButton! // Top-left action button
     private var muteButton: UIButton!
     private var videoButton: UIButton!
     private var flipButton: UIButton!
@@ -59,6 +63,11 @@ class VideoCallViewController: UIViewController {
     private var isVideoEnabled = true
     private var currentAudioRoute: AudioRoute = .speaker
     private var preferredAudioRoute: AudioRoute = .speaker
+
+    // Role selection and user list management
+    private var pendingRoleKey: String?
+    private var roleSelectionAlert: UIAlertController?
+    private var userListAlert: UIAlertController?
 
     // Participant Rendering Manager
     private var participantRenderers: [String: ParticipantRenderer] = [:]
@@ -104,6 +113,25 @@ class VideoCallViewController: UIViewController {
             thumbnailGridContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
             thumbnailGridContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             thumbnailGridContainer.widthAnchor.constraint(equalToConstant: 120)
+        ])
+
+        // Top-left action button (role selection)
+        roleActionButton = UIButton(type: .system)
+        roleActionButton.setImage(UIImage(systemName: "plus"), for: .normal)
+        roleActionButton.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        roleActionButton.tintColor = .white
+        roleActionButton.layer.cornerRadius = 24
+        roleActionButton.clipsToBounds = true
+        roleActionButton.isHidden = true // Initially hidden, will be shown based on conditions
+        roleActionButton.translatesAutoresizingMaskIntoConstraints = false
+        roleActionButton.addTarget(self, action: #selector(showRoleSelectionDialog), for: .touchUpInside)
+        view.addSubview(roleActionButton)
+
+        NSLayoutConstraint.activate([
+            roleActionButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+            roleActionButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            roleActionButton.widthAnchor.constraint(equalToConstant: 48),
+            roleActionButton.heightAnchor.constraint(equalToConstant: 48)
         ])
 
         // Local video thumbnail (always at top of grid)
@@ -501,10 +529,160 @@ class VideoCallViewController: UIViewController {
         // This ensures the SDK's disconnect callback is properly triggered
     }
 
+    // MARK: - Role Selection and User List Management
+
+    private func updateActionButtonVisibility() {
+        let shouldShow = remoteParticipantCount < 2 &&
+                        (userRole == "mht" || userRole == "cct")
+
+        DispatchQueue.main.async {
+            self.roleActionButton.isHidden = !shouldShow
+        }
+    }
+
+    @objc private func showRoleSelectionDialog() {
+        // Dismiss any existing alerts
+        roleSelectionAlert?.dismiss(animated: false, completion: nil)
+        userListAlert?.dismiss(animated: false, completion: nil)
+
+        let alert = UIAlertController(title: "Select Role", message: nil, preferredStyle: .actionSheet)
+
+        let roleOptions = [
+            ("MHT", "mht"),
+            ("CCT", "cct"),
+            ("Patient", "patient"),
+            ("Participants", "participant")
+        ]
+
+        for (title, roleKey) in roleOptions {
+            let action = UIAlertAction(title: title, style: .default) { _ in
+                self.handleRoleSelection(selectedRoleKey: roleKey)
+            }
+            alert.addAction(action)
+        }
+
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            TwilioVideoPlugin.getInstance()?.notifyPopupDismissed(popupType: "role", reason: "cancelled")
+        }
+        alert.addAction(cancelAction)
+
+        // For iPad support
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = roleActionButton
+            popover.sourceRect = roleActionButton.bounds
+        }
+
+        roleSelectionAlert = alert
+        present(alert, animated: true)
+    }
+
+    private func handleRoleSelection(selectedRoleKey: String) {
+        pendingRoleKey = selectedRoleKey
+
+        // Notify Ionic about the role selection
+        TwilioVideoPlugin.getInstance()?.notifyRoleSelected(
+            selectedRoleKey: selectedRoleKey,
+            identity: userIdentity,
+            role: userRole,
+            tenantId: tenantId,
+            roomName: roomName
+        )
+    }
+
+    func handleUsersList(selectedRoleKey: String, users: [[String: String]]) {
+        guard selectedRoleKey == pendingRoleKey else {
+            TwilioVideoPlugin.getInstance()?.notifyPopupError(message: "Role key mismatch", popupType: "userList")
+            return
+        }
+
+        DispatchQueue.main.async {
+            // Dismiss any existing user list alert
+            self.userListAlert?.dismiss(animated: false, completion: nil)
+
+            // Notify that users list is loaded
+            TwilioVideoPlugin.getInstance()?.notifyUsersListLoaded(selectedRoleKey: selectedRoleKey, userCount: users.count)
+
+            if users.isEmpty {
+                self.showEmptyUserListDialog(selectedRoleKey: selectedRoleKey)
+            } else {
+                self.showUserSelectionDialog(selectedRoleKey: selectedRoleKey, users: users)
+            }
+        }
+    }
+
+    private func showEmptyUserListDialog(selectedRoleKey: String) {
+        let alert = UIAlertController(
+            title: "No Users Available",
+            message: "No data available for the selected role.",
+            preferredStyle: .alert
+        )
+
+        let okAction = UIAlertAction(title: "OK", style: .default)
+        alert.addAction(okAction)
+
+        userListAlert = alert
+        present(alert, animated: true)
+    }
+
+    private func showUserSelectionDialog(selectedRoleKey: String, users: [[String: String]]) {
+        let alert = UIAlertController(title: "Select User", message: nil, preferredStyle: .actionSheet)
+
+        for user in users {
+            guard let fullName = user["full_name"] else { continue }
+
+            let action = UIAlertAction(title: fullName, style: .default) { _ in
+                self.handleUserSelection(selectedUser: user, selectedRoleKey: selectedRoleKey)
+            }
+            alert.addAction(action)
+        }
+
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            TwilioVideoPlugin.getInstance()?.notifyPopupDismissed(popupType: "userList", reason: "cancelled")
+        }
+        alert.addAction(cancelAction)
+
+        // For iPad support
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = roleActionButton
+            popover.sourceRect = roleActionButton.bounds
+        }
+
+        userListAlert = alert
+        present(alert, animated: true)
+    }
+
+    private func handleUserSelection(selectedUser: [String: String], selectedRoleKey: String) {
+        let id = selectedUser["id"] ?? ""
+        let userId = selectedUser["user_id"] ?? ""
+        let fullName = selectedUser["full_name"] ?? ""
+
+        // Notify Ionic about the user selection
+        TwilioVideoPlugin.getInstance()?.notifyUserSelected(
+            id: id,
+            userId: userId,
+            fullName: fullName,
+            selectedRoleKey: selectedRoleKey,
+            tenantId: tenantId,
+            role: userRole
+        )
+
+        // Clear pending role key
+        pendingRoleKey = nil
+    }
+
 
     // MARK: - Cleanup
     private func cleanup() {
         print("Cleaning up resources")
+
+        // Dismiss any open dialogs
+        roleSelectionAlert?.dismiss(animated: false, completion: nil)
+        userListAlert?.dismiss(animated: false, completion: nil)
+
+        // Clear references
+        roleSelectionAlert = nil
+        userListAlert = nil
+        pendingRoleKey = nil
 
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceTimer?.invalidate()
@@ -640,6 +818,9 @@ extension VideoCallViewController: RoomDelegate {
 
         // Update UI to reflect connected state
         updateButtonStates()
+
+        // Initialize action button visibility
+        updateActionButtonVisibility()
     }
 
     func roomDidFailToConnect(room: Room, error: Error) {
@@ -723,6 +904,9 @@ extension VideoCallViewController {
 
         print("Added remote participant: \(participant.identity), total: \(remoteParticipantCount)")
 
+        // Update action button visibility
+        updateActionButtonVisibility()
+
         // Subscribe to existing published video tracks
         for publication in participant.remoteVideoTracks {
             if let track = publication.remoteTrack, publication.isTrackSubscribed {
@@ -741,6 +925,9 @@ extension VideoCallViewController {
         remoteParticipantCount -= 1
 
         print("Removing participant: \(participant.identity), remaining: \(remoteParticipantCount)")
+
+        // Update action button visibility
+        updateActionButtonVisibility()
 
         // Unsubscribe from video tracks
         for publication in participant.remoteVideoTracks {

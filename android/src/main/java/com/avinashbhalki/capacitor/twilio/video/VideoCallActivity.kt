@@ -569,10 +569,8 @@ class VideoCallActivity : AppCompatActivity() {
             // Transition to DISCONNECTED
             transitionToState(CallState.DISCONNECTED)
 
-            TwilioVideoPlugin.getInstance()?.notifyRoomDisconnected(
-                room.name,
-                twilioException?.message
-            )
+            // Capture room object immediately before cleanup
+            TwilioVideoPlugin.getInstance()?.notifyRoomDisconnected(room)
 
             // Cleanup and finish on main thread to ensure notifiers are sent first
             runOnUiThread {

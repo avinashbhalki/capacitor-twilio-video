@@ -1,5 +1,6 @@
 import Foundation
 import Capacitor
+import TwilioVideo
 
 /**
  * Please read the Capacitor iOS Plugin Development Guide
@@ -161,12 +162,49 @@ public class TwilioVideoPlugin: CAPPlugin {
         notifyListeners("roomConnected", data: ["roomName": roomName])
     }
 
-    public func notifyRoomDisconnected(roomName: String, reason: String?) {
-        var data: [String: Any] = ["roomName": roomName]
-        if let reason = reason {
-            data["reason"] = reason
+    public func notifyRoomDisconnected(room: Room) {
+        // Build room object structure
+        var roomData: [String: Any] = [
+            "sid": room.sid,
+            "name": room.name,
+            "state": roomStateToString(room.state)
+        ]
+
+        // Add local participant
+        if let localParticipant = room.localParticipant {
+            roomData["localParticipant"] = [
+                "sid": localParticipant.sid,
+                "identity": localParticipant.identity
+            ]
         }
+
+        // Add remote participants
+        var remoteParticipants: [[String: Any]] = []
+        for participant in room.remoteParticipants {
+            remoteParticipants.append([
+                "sid": participant.sid,
+                "identity": participant.identity
+            ])
+        }
+        roomData["remoteParticipants"] = remoteParticipants
+
+        let data: [String: Any] = ["room": roomData]
         notifyListeners("roomDisconnected", data: data)
+    }
+
+    private func roomStateToString(_ state: Room.State) -> String {
+        switch state {
+        case .connecting:
+            return "connecting"
+        case .connected:
+            return "connected"
+        case .reconnecting:
+            return "reconnecting"
+        case .disconnected:
+            return "disconnected"
+        @unknown default:
+            return "unknown"
+        }
     }
 
     public func notifyParticipantJoined(identity: String) {

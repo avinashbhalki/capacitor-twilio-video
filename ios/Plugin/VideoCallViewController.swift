@@ -891,10 +891,8 @@ extension VideoCallViewController: RoomDelegate {
         // Transition to DISCONNECTED
         transitionToState(.disconnected)
 
-        TwilioVideoPlugin.getInstance()?.notifyRoomDisconnected(
-            roomName: room.name,
-            reason: error?.localizedDescription
-        )
+        // Capture room object immediately before cleanup
+        TwilioVideoPlugin.getInstance()?.notifyRoomDisconnected(room: room)
         cleanup()
 
         // Dismiss the view controller to return to the previous screen

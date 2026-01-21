@@ -125,14 +125,54 @@ export interface RoomConnectedEvent {
  */
 export interface RoomDisconnectedEvent {
   /**
-   * The name of the disconnected room
+   * The complete room object at the time of disconnection
    */
-  roomName: string;
+  room: {
+    /**
+     * Unique identifier of the room
+     */
+    sid: string;
 
-  /**
-   * Optional reason for disconnection
-   */
-  reason?: string;
+    /**
+     * Name of the room
+     */
+    name: string;
+
+    /**
+     * Current state of the room
+     */
+    state: string;
+
+    /**
+     * Local participant information
+     */
+    localParticipant: {
+      /**
+       * Local participant SID
+       */
+      sid: string;
+
+      /**
+       * Local participant identity
+       */
+      identity: string;
+    };
+
+    /**
+     * List of remote participants
+     */
+    remoteParticipants: {
+      /**
+       * Remote participant SID
+       */
+      sid: string;
+
+      /**
+       * Remote participant identity
+       */
+      identity: string;
+    }[];
+  };
 }
 
 /**

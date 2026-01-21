@@ -8,6 +8,7 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
+import com.twilio.video.Room
 
 @CapacitorPlugin(
     name = "TwilioVideo",
@@ -159,13 +160,43 @@ class TwilioVideoPlugin : Plugin() {
         notifyListeners("roomConnected", data)
     }
 
-    fun notifyRoomDisconnected(roomName: String, reason: String?) {
-        val data = JSObject()
-        data.put("roomName", roomName)
-        if (reason != null) {
-            data.put("reason", reason)
+    fun notifyRoomDisconnected(room: com.twilio.video.Room) {
+        // Build room object structure
+        val roomData = JSObject()
+        roomData.put("sid", room.sid)
+        roomData.put("name", room.name)
+        roomData.put("state", roomStateToString(room.state))
+
+        // Add local participant
+        room.localParticipant?.let { localParticipant ->
+            val localParticipantData = JSObject()
+            localParticipantData.put("sid", localParticipant.sid)
+            localParticipantData.put("identity", localParticipant.identity)
+            roomData.put("localParticipant", localParticipantData)
         }
+
+        // Add remote participants
+        val remoteParticipants = mutableListOf<JSObject>()
+        room.remoteParticipants.forEach { participant ->
+            val participantData = JSObject()
+            participantData.put("sid", participant.sid)
+            participantData.put("identity", participant.identity)
+            remoteParticipants.add(participantData)
+        }
+        roomData.put("remoteParticipants", remoteParticipants)
+
+        val data = JSObject()
+        data.put("room", roomData)
         notifyListeners("roomDisconnected", data)
+    }
+
+    private fun roomStateToString(state: com.twilio.video.Room.State): String {
+        return when (state) {
+            com.twilio.video.Room.State.CONNECTING -> "connecting"
+            com.twilio.video.Room.State.CONNECTED -> "connected"
+            com.twilio.video.Room.State.RECONNECTING -> "reconnecting"
+            com.twilio.video.Room.State.DISCONNECTED -> "disconnected"
+        }
     }
 
     fun notifyParticipantJoined(identity: String) {

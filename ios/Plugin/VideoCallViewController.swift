@@ -70,8 +70,6 @@ class VideoCallViewController: UIViewController {
     private var userListAlert: UIAlertController?
     private var isPopupVisible = false // Guard against multiple popup presentations
     private var wasIdleTimerDisabled = false // Original idle timer state
-    private var isPopupVisible = false // Guard against multiple popup presentations
-    private var wasIdleTimerDisabled = false // Original idle timer state
 
     // Participant Rendering Manager
     private var participantRenderers: [String: ParticipantRenderer] = [:]
@@ -600,6 +598,7 @@ class VideoCallViewController: UIViewController {
         roleSelectionAlert = alert
         present(alert, animated: true)
         print("📋 Role selection dialog presented")
+    }
 
     private func handleRoleSelection(selectedRoleKey: String) {
         pendingRoleKey = selectedRoleKey
@@ -678,6 +677,13 @@ class VideoCallViewController: UIViewController {
         let okAction = UIAlertAction(title: "OK", style: .default) { _ in
             self.isPopupVisible = false
         }
+        alert.addAction(okAction)
+
+        userListAlert = alert
+        present(alert, animated: true)
+    }
+
+    private func showUserSelectionDialog(selectedRoleKey: String, users: [[String: String]]) {
         let alert = UIAlertController(title: "Select User", message: nil, preferredStyle: .actionSheet)
 
         for user in users {
@@ -727,6 +733,63 @@ class VideoCallViewController: UIViewController {
         pendingRoleKey = nil
     }
 
+    // MARK: - Helper Methods for Popup Management
+
+    private func checkIfPatientIsPresent() -> Bool {
+        print("🔍 Checking if patient is present in room (SID: \(room?.sid ?? "nil"))")
+
+        // Check local participant first
+        if let localRole = userRole?.lowercased() {
+            print("🔍 Local participant role: \(localRole)")
+            if localRole == "patient" {
+                print("✅ Patient found - local participant")
+                return true
+            }
+        }
+
+        // Check ALL remote participants in current room state
+        guard let currentRoom = room else {
+            print("⚠️ No room available for patient check")
+            return false
+        }
+
+        print("🔍 Checking \(currentRoom.remoteParticipants.count) remote participants")
+
+        for participant in currentRoom.remoteParticipants {
+            let participantRole = extractRoleFromIdentity(participant.identity)?.lowercased()
+            print("🔍 Participant \(participant.identity) role: \(participantRole ?? "unknown")")
+
+            if participantRole == "patient" {
+                print("✅ Patient found - remote participant: \(participant.identity)")
+                return true
+            }
+        }
+
+        print("❌ No patient found in current room participants")
+        return false
+    }
+
+    private func dismissExistingPopups() {
+        roleSelectionAlert?.dismiss(animated: false, completion: nil)
+        userListAlert?.dismiss(animated: false, completion: nil)
+        roleSelectionAlert = nil
+        userListAlert = nil
+    }
+
+    private func preventScreenLock() {
+        DispatchQueue.main.async {
+            self.wasIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+            UIApplication.shared.isIdleTimerDisabled = true
+            print("🔒 Screen lock disabled during active call")
+        }
+    }
+
+    private func restoreScreenLock() {
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = self.wasIdleTimerDisabled
+            print("🔓 Screen lock behavior restored")
+        }
+    }
 
     // MARK: - Cleanup
     private func cleanup() {
@@ -738,6 +801,8 @@ class VideoCallViewController: UIViewController {
         // Dismiss any open dialogs and reset state
         dismissExistingPopups()
         isPopupVisible = false
+        pendingRoleKey = nil
+
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceTimer?.invalidate()
         dominantSpeakerDebounceTimer = nil
@@ -885,6 +950,12 @@ extension VideoCallViewController: RoomDelegate {
 
         // Prevent screen lock during active call
         preventScreenLock()
+
+        TwilioVideoPlugin.getInstance()?.notifyRoomConnected(roomName: room.name)
+
+        // Handle existing participants
+        for participant in room.remoteParticipants {
+            addRemoteParticipant(participant)
         }
 
         // Update UI to reflect connected state

@@ -1221,7 +1221,6 @@ class VideoCallActivity : AppCompatActivity() {
             roleSelectionDialog = dialogBuilder.create()
             roleSelectionDialog?.show()
             Log.d(TAG, "📋 Role selection dialog presented")
-            roleSelectionDialog?.show()
 
         } catch (e: Exception) {
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show role selection dialog: ${e.message}", "role")
@@ -1285,7 +1284,6 @@ class VideoCallActivity : AppCompatActivity() {
                 Log.d(TAG, "handleUsersList showing user selection dialog")
                 showUserSelectionDialog(selectedRoleKey, users)
             }
-        }
         }
     }
 
@@ -1353,6 +1351,65 @@ class VideoCallActivity : AppCompatActivity() {
 
         // Clear pending role key
         pendingRoleKey = null
+    }
+
+    // Helper Methods for Popup Management and Screen Lock
+
+    private fun checkIfPatientIsPresent(): Boolean {
+        Log.d(TAG, "🔍 Checking if patient is present in room (SID: ${room?.sid ?: "null"})")
+
+        // Check local participant first
+        userRole?.let { role ->
+            Log.d(TAG, "🔍 Local participant role: $role")
+            if (role.lowercase() == "patient") {
+                Log.d(TAG, "✅ Patient found - local participant")
+                return true
+            }
+        }
+
+        // Check ALL remote participants using current room state
+        val currentRoom = room
+        if (currentRoom == null) {
+            Log.w(TAG, "⚠️ No room available for patient check")
+            return false
+        }
+
+        val remoteParticipants = currentRoom.remoteParticipants
+        Log.d(TAG, "🔍 Checking ${remoteParticipants.size} remote participants")
+
+        for (participant in remoteParticipants) {
+            val participantRole = extractRoleFromIdentity(participant.identity)?.lowercase()
+            Log.d(TAG, "🔍 Participant ${participant.identity} role: ${participantRole ?: "unknown"}")
+
+            if (participantRole == "patient") {
+                Log.d(TAG, "✅ Patient found - remote participant: ${participant.identity}")
+                return true
+            }
+        }
+
+        Log.d(TAG, "❌ No patient found in current room participants")
+        return false
+    }
+
+    private fun dismissExistingPopups() {
+        roleSelectionDialog?.dismiss()
+        userListDialog?.dismiss()
+        roleSelectionDialog = null
+        userListDialog = null
+    }
+
+    private fun preventScreenLock() {
+        runOnUiThread {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            Log.d(TAG, "🔒 Screen lock disabled during active call")
+        }
+    }
+
+    private fun restoreScreenLock() {
+        runOnUiThread {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            Log.d(TAG, "🔓 Screen lock behavior restored")
+        }
     }
 
     private fun cleanup() {

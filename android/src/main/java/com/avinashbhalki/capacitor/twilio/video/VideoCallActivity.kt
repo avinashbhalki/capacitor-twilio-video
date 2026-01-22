@@ -508,38 +508,15 @@ class VideoCallActivity : AppCompatActivity() {
      */
     private fun extractRoleFromIdentity(identity: String?): String? {
         if (identity.isNullOrEmpty()) return null
-
-        val lowercasedIdentity = identity.lowercase()
-
-        // Check for patient role with multiple possible formats
-        if (lowercasedIdentity.contains("patient") ||
-            lowercasedIdentity.contains("@patient") ||
-            lowercasedIdentity.endsWith("_patient") ||
-            lowercasedIdentity.startsWith("patient_") ||
-            lowercasedIdentity.startsWith("patient@")) {
-            return "patient"
+        // If identity contains role information in a known format, extract it
+        // This is a placeholder - implement according to your identity format
+        // For example, if identity is "user@MHT" or "user_MHT" extract "MHT"
+        return when {
+            identity.contains("@MHT") || identity.endsWith("_MHT") -> "MHT"
+            identity.contains("@CCT") || identity.endsWith("_CCT") -> "CCT"
+            identity.contains("@Patient") || identity.endsWith("_Patient") -> "Patient"
+            else -> null // Role information not available in identity
         }
-
-        // Check for MHT role
-        if (lowercasedIdentity.contains("@mht") ||
-            lowercasedIdentity.endsWith("_mht") ||
-            lowercasedIdentity.startsWith("mht_") ||
-            lowercasedIdentity.startsWith("mht@") ||
-            lowercasedIdentity.contains("mht")) {
-            return "mht"
-        }
-
-        // Check for CCT role
-        if (lowercasedIdentity.contains("@cct") ||
-            lowercasedIdentity.endsWith("_cct") ||
-            lowercasedIdentity.startsWith("cct_") ||
-            lowercasedIdentity.startsWith("cct@") ||
-            lowercasedIdentity.contains("cct")) {
-            return "cct"
-        }
-
-        // No recognized role found
-        return null
     }
 
     private val roomListener = object : Room.Listener {
@@ -549,9 +526,6 @@ class VideoCallActivity : AppCompatActivity() {
 
             // Transition to CONNECTED state
             transitionToState(CallState.CONNECTED)
-
-            // Prevent screen lock during active call
-            preventScreenLock()
 
             TwilioVideoPlugin.getInstance()?.notifyRoomConnected(room.name)
 
@@ -1204,35 +1178,17 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun showRoleSelectionDialog() {
-        Log.d(TAG, "📋 Attempting to show role selection dialog")
-
-        // Dynamic role visibility check
-        val hasPatientInCall = checkIfPatientIsPresent()
-        Log.d(TAG, "🔍 Patient in call check: $hasPatientInCall")
-
         // Dismiss any existing dialogs
         roleSelectionDialog?.dismiss()
         userListDialog?.dismiss()
 
-        val options = mutableListOf("MHT", "CCT")
-        val roleKeys = mutableListOf("mht", "cct")
-
-        // Only add "Patient" option if no patient is currently in the call
-        if (!hasPatientInCall) {
-            options.add("Patient")
-            roleKeys.add("patient")
-            Log.d(TAG, "✅ Patient option added to role selection")
-        } else {
-            Log.d(TAG, "🚫 Patient option hidden - patient already in call")
-        }
-
-        options.add("Participants")
-        roleKeys.add("participant")
+        val options = arrayOf("MHT", "CCT", "Patient", "Participants")
+        val roleKeys = arrayOf("mht", "cct", "patient", "participant")
 
         try {
             val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
                 .setTitle("Select Role")
-                .setItems(options.toTypedArray()) { dialog, which ->
+                .setItems(options) { dialog, which ->
                     val selectedRoleKey = roleKeys[which]
                     handleRoleSelection(selectedRoleKey)
                     dialog.dismiss()
@@ -1243,7 +1199,6 @@ class VideoCallActivity : AppCompatActivity() {
 
             roleSelectionDialog = dialogBuilder.create()
             roleSelectionDialog?.show()
-            Log.d(TAG, "📋 Role selection dialog presented")
 
         } catch (e: Exception) {
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show role selection dialog: ${e.message}", "role")
@@ -1307,6 +1262,7 @@ class VideoCallActivity : AppCompatActivity() {
                 Log.d(TAG, "handleUsersList showing user selection dialog")
                 showUserSelectionDialog(selectedRoleKey, users)
             }
+        }
         }
     }
 
@@ -1376,78 +1332,8 @@ class VideoCallActivity : AppCompatActivity() {
         pendingRoleKey = null
     }
 
-    // Helper Methods for Popup Management and Screen Lock
-
-    private fun checkIfPatientIsPresent(): Boolean {
-        Log.d(TAG, "🔍 VideoCallActivity: Checking if patient is present in room (SID: ${room?.sid ?: "null"})")
-        Log.d(TAG, "🔍 VideoCallActivity: Current room state: ${if (room != null) "connected" else "not connected"}")
-
-        // Check local participant first
-        userRole?.let { role ->
-            Log.d(TAG, "🔍 VideoCallActivity: Local participant role: '$role'")
-            if (role.lowercase() == "patient") {
-                Log.d(TAG, "✅ VideoCallActivity: Patient found - LOCAL participant has patient role")
-                return true
-            }
-        } ?: run {
-            Log.w(TAG, "⚠️ VideoCallActivity: Local participant role is null")
-        }
-
-        // Check ALL remote participants using current room state
-        val currentRoom = room
-        if (currentRoom == null) {
-            Log.w(TAG, "⚠️ VideoCallActivity: No room available for patient check - cannot evaluate remote participants")
-            return false
-        }
-
-        val remoteParticipants = currentRoom.remoteParticipants
-        Log.d(TAG, "🔍 VideoCallActivity: Checking ${remoteParticipants.size} remote participant(s)")
-
-        remoteParticipants.forEachIndexed { index, participant ->
-            Log.d(TAG, "🔍 VideoCallActivity: Remote participant[$index] identity: '${participant.identity}'")
-            val participantRole = extractRoleFromIdentity(participant.identity)?.lowercase()
-            Log.d(TAG, "🔍 VideoCallActivity: Remote participant[$index] extracted role: '${participantRole ?: "none"}' from identity '${participant.identity}'")
-
-            if (participantRole == "patient") {
-                Log.d(TAG, "✅ VideoCallActivity: Patient found - REMOTE participant '${participant.identity}' has patient role")
-                return true
-            }
-        }
-
-        Log.d(TAG, "❌ VideoCallActivity: No patient found among ${remoteParticipants.size} remote participant(s) and local participant")
-        return false
-    }
-
-    private fun dismissExistingPopups() {
-        roleSelectionDialog?.dismiss()
-        userListDialog?.dismiss()
-        roleSelectionDialog = null
-        userListDialog = null
-    }
-
-    private fun preventScreenLock() {
-        runOnUiThread {
-            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            Log.d(TAG, "🔒 Screen lock disabled during active call")
-        }
-    }
-
-    private fun restoreScreenLock() {
-        runOnUiThread {
-            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            Log.d(TAG, "🔓 Screen lock behavior restored")
-        }
-    }
-
     private fun cleanup() {
         Log.d(TAG, "Cleaning up resources")
-
-        // Restore screen lock behavior first
-        restoreScreenLock()
-
-        // Dismiss any open dialogs and reset state
-        dismissExistingPopups()
-        pendingRoleKey = null
 
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceRunnable?.let { mainHandler.removeCallbacks(it) }

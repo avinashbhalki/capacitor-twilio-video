@@ -68,8 +68,6 @@ class VideoCallViewController: UIViewController {
     private var pendingRoleKey: String?
     private var roleSelectionAlert: UIAlertController?
     private var userListAlert: UIAlertController?
-    private var isPopupVisible = false // Guard against multiple popup presentations
-    private var wasIdleTimerDisabled = false // Original idle timer state
 
     // Participant Rendering Manager
     private var participantRenderers: [String: ParticipantRenderer] = [:]
@@ -543,48 +541,27 @@ class VideoCallViewController: UIViewController {
     }
 
     @objc private func showRoleSelectionDialog() {
-        print("📋 Attempting to show role selection dialog")
-
-        // Guard against multiple popup presentations
-        guard !isPopupVisible else {
-            print("⚠️ Popup already visible, ignoring show request")
-            return
-        }
-
-        // Dynamic role visibility check
-        let hasPatientInCall = checkIfPatientIsPresent()
-        print("🔍 Patient in call check: \(hasPatientInCall)")
-
-        dismissExistingPopups()
-        isPopupVisible = true
+        // Dismiss any existing alerts
+        roleSelectionAlert?.dismiss(animated: false, completion: nil)
+        userListAlert?.dismiss(animated: false, completion: nil)
 
         let alert = UIAlertController(title: "Select Role", message: nil, preferredStyle: .actionSheet)
 
-        var roleOptions = [
+        let roleOptions = [
             ("MHT", "mht"),
-            ("CCT", "cct")
+            ("CCT", "cct"),
+            ("Patient", "patient"),
+            ("Participants", "participant")
         ]
-
-        // Only add "Patient" option if no patient is currently in the call
-        if !hasPatientInCall {
-            roleOptions.append(("Patient", "patient"))
-            print("✅ Patient option added to role selection")
-        } else {
-            print("🚫 Patient option hidden - patient already in call")
-        }
-
-        roleOptions.append(("Participants", "participant"))
 
         for (title, roleKey) in roleOptions {
             let action = UIAlertAction(title: title, style: .default) { _ in
-                self.isPopupVisible = false
                 self.handleRoleSelection(selectedRoleKey: roleKey)
             }
             alert.addAction(action)
         }
 
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel) { _ in
-            self.isPopupVisible = false
             TwilioVideoPlugin.getInstance()?.notifyPopupDismissed(popupType: "role", reason: "cancelled")
         }
         alert.addAction(cancelAction)
@@ -597,7 +574,6 @@ class VideoCallViewController: UIViewController {
 
         roleSelectionAlert = alert
         present(alert, animated: true)
-        print("📋 Role selection dialog presented")
     }
 
     private func handleRoleSelection(selectedRoleKey: String) {
@@ -644,15 +620,8 @@ class VideoCallViewController: UIViewController {
         DispatchQueue.main.async {
             print("VideoCallViewController: handleUsersList opening list UI on main thread")
 
-            // Guard against multiple popup presentations
-            guard !self.isPopupVisible else {
-                print("⚠️ Popup already visible, ignoring user list request")
-                TwilioVideoPlugin.getInstance()?.notifyPopupError(message: "Popup already visible", popupType: "userList")
-                return
-            }
-
-            self.isPopupVisible = true
-            self.dismissExistingPopups()
+            // Dismiss any existing user list alert
+            self.userListAlert?.dismiss(animated: false, completion: nil)
 
             // Notify that users list is loaded
             TwilioVideoPlugin.getInstance()?.notifyUsersListLoaded(selectedRoleKey: selectedRoleKey, userCount: users.count)
@@ -674,9 +643,7 @@ class VideoCallViewController: UIViewController {
             preferredStyle: .alert
         )
 
-        let okAction = UIAlertAction(title: "OK", style: .default) { _ in
-            self.isPopupVisible = false
-        }
+        let okAction = UIAlertAction(title: "OK", style: .default)
         alert.addAction(okAction)
 
         userListAlert = alert
@@ -690,14 +657,12 @@ class VideoCallViewController: UIViewController {
             guard let fullName = user["full_name"] else { continue }
 
             let action = UIAlertAction(title: fullName, style: .default) { _ in
-                self.isPopupVisible = false
                 self.handleUserSelection(selectedUser: user, selectedRoleKey: selectedRoleKey)
             }
             alert.addAction(action)
         }
 
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel) { _ in
-            self.isPopupVisible = false
             TwilioVideoPlugin.getInstance()?.notifyPopupDismissed(popupType: "userList", reason: "cancelled")
         }
         alert.addAction(cancelAction)
@@ -733,79 +698,18 @@ class VideoCallViewController: UIViewController {
         pendingRoleKey = nil
     }
 
-    // MARK: - Helper Methods for Popup Management
-
-    private func checkIfPatientIsPresent() -> Bool {
-        print("🔍 VideoCallViewController: Checking if patient is present in room (SID: \(room?.sid ?? "nil"))")
-        print("🔍 VideoCallViewController: Current room state: \(room != nil ? "connected" : "not connected")")
-
-        // Check local participant first
-        if let localRole = userRole?.lowercased() {
-            print("🔍 VideoCallViewController: Local participant role: '\(localRole)'")
-            if localRole == "patient" {
-                print("✅ VideoCallViewController: Patient found - LOCAL participant has patient role")
-                return true
-            }
-        } else {
-            print("⚠️ VideoCallViewController: Local participant role is nil")
-        }
-
-        // Check ALL remote participants in current room state
-        guard let currentRoom = room else {
-            print("⚠️ VideoCallViewController: No room available for patient check - cannot evaluate remote participants")
-            return false
-        }
-
-        let remoteParticipants = currentRoom.remoteParticipants
-        print("🔍 VideoCallViewController: Checking \(remoteParticipants.count) remote participant(s)")
-
-        for (index, participant) in remoteParticipants.enumerated() {
-            print("🔍 VideoCallViewController: Remote participant[\(index)] identity: '\(participant.identity)'")
-            let participantRole = extractRoleFromIdentity(participant.identity)?.lowercased()
-            print("🔍 VideoCallViewController: Remote participant[\(index)] extracted role: '\(participantRole ?? "none")' from identity '\(participant.identity)'")
-
-            if participantRole == "patient" {
-                print("✅ VideoCallViewController: Patient found - REMOTE participant '\(participant.identity)' has patient role")
-                return true
-            }
-        }
-
-        print("❌ VideoCallViewController: No patient found among \(remoteParticipants.count) remote participant(s) and local participant")
-        return false
-    }
-
-    private func dismissExistingPopups() {
-        roleSelectionAlert?.dismiss(animated: false, completion: nil)
-        userListAlert?.dismiss(animated: false, completion: nil)
-        roleSelectionAlert = nil
-        userListAlert = nil
-    }
-
-    private func preventScreenLock() {
-        DispatchQueue.main.async {
-            self.wasIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
-            UIApplication.shared.isIdleTimerDisabled = true
-            print("🔒 Screen lock disabled during active call")
-        }
-    }
-
-    private func restoreScreenLock() {
-        DispatchQueue.main.async {
-            UIApplication.shared.isIdleTimerDisabled = self.wasIdleTimerDisabled
-            print("🔓 Screen lock behavior restored")
-        }
-    }
 
     // MARK: - Cleanup
     private func cleanup() {
         print("Cleaning up resources")
 
-        // Restore screen lock behavior
-        restoreScreenLock()
+        // Dismiss any open dialogs
+        roleSelectionAlert?.dismiss(animated: false, completion: nil)
+        userListAlert?.dismiss(animated: false, completion: nil)
 
-        // Dismiss any open dialogs and reset state
-        dismissExistingPopups()
-        isPopupVisible = false
+        // Clear references
+        roleSelectionAlert = nil
+        userListAlert = nil
         pendingRoleKey = nil
 
         // Cancel any pending dominant speaker updates
@@ -929,38 +833,18 @@ class VideoCallViewController: UIViewController {
      */
     private func extractRoleFromIdentity(_ identity: String?) -> String? {
         guard let identity = identity, !identity.isEmpty else { return nil }
-
-        let lowercasedIdentity = identity.lowercased()
-
-        // Check for patient role with multiple possible formats
-        if lowercasedIdentity.contains("patient") ||
-           lowercasedIdentity.contains("@patient") ||
-           lowercasedIdentity.hasSuffix("_patient") ||
-           lowercasedIdentity.hasPrefix("patient_") ||
-           lowercasedIdentity.hasPrefix("patient@") {
-            return "patient"
-        }
-
-        // Check for MHT role
-        if lowercasedIdentity.contains("@mht") ||
-           lowercasedIdentity.hasSuffix("_mht") ||
-           lowercasedIdentity.hasPrefix("mht_") ||
-           lowercasedIdentity.hasPrefix("mht@") ||
-           lowercasedIdentity.contains("mht") {
+        // If identity contains role information in a known format, extract it
+        // This is a placeholder - implement according to your identity format
+        // For example, if identity is "user@MHT" or "user_MHT" extract "MHT"
+        if identity.contains("@mht") || identity.hasSuffix("_mht") {
             return "mht"
-        }
-
-        // Check for CCT role
-        if lowercasedIdentity.contains("@cct") ||
-           lowercasedIdentity.hasSuffix("_cct") ||
-           lowercasedIdentity.hasPrefix("cct_") ||
-           lowercasedIdentity.hasPrefix("cct@") ||
-           lowercasedIdentity.contains("cct") {
+        } else if identity.contains("@cct") || identity.hasSuffix("_cct") {
             return "cct"
+        } else if identity.contains("@patient") || identity.hasSuffix("_patient") {
+            return "patient"
+        } else {
+            return nil // Role information not available in identity
         }
-
-        // No recognized role found
-        return nil
     }
 }
 
@@ -972,9 +856,6 @@ extension VideoCallViewController: RoomDelegate {
 
         // Transition to CONNECTED state
         transitionToState(.connected)
-
-        // Prevent screen lock during active call
-        preventScreenLock()
 
         TwilioVideoPlugin.getInstance()?.notifyRoomConnected(roomName: room.name)
 

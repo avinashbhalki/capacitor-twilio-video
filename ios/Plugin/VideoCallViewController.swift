@@ -68,6 +68,8 @@ class VideoCallViewController: UIViewController {
     private var pendingRoleKey: String?
     private var roleSelectionAlert: UIAlertController?
     private var userListAlert: UIAlertController?
+    private var isPopupVisible = false // Guard against multiple popup presentations
+    private var wasIdleTimerDisabled = false // Track original idle timer state
 
     // Participant Rendering Manager
     private var participantRenderers: [String: ParticipantRenderer] = [:]
@@ -541,27 +543,48 @@ class VideoCallViewController: UIViewController {
     }
 
     @objc private func showRoleSelectionDialog() {
-        // Dismiss any existing alerts
-        roleSelectionAlert?.dismiss(animated: false, completion: nil)
-        userListAlert?.dismiss(animated: false, completion: nil)
+        // Guard against multiple presentations
+        guard !isPopupVisible else {
+            print("VideoCallViewController: Popup presentation blocked - another popup is already visible")
+            return
+        }
+
+        print("VideoCallViewController: Opening role selection dialog")
+
+        // Dismiss any existing alerts and update state
+        dismissExistingPopups()
+        isPopupVisible = true
 
         let alert = UIAlertController(title: "Select Role", message: nil, preferredStyle: .actionSheet)
 
-        let roleOptions = [
+        // Check if patient is already present in the call
+        let hasPatientInCall = checkIfPatientIsPresent()
+        print("VideoCallViewController: Patient present in call: \(hasPatientInCall)")
+
+        // Build role options dynamically
+        var roleOptions = [
             ("MHT", "mht"),
-            ("CCT", "cct"),
-            ("Patient", "patient"),
-            ("Participants", "participant")
+            ("CCT", "cct")
         ]
+
+        // Only add Patient option if no patient is currently in the call
+        if !hasPatientInCall {
+            roleOptions.append(("Patient", "patient"))
+        }
+
+        roleOptions.append(("Participants", "participant"))
 
         for (title, roleKey) in roleOptions {
             let action = UIAlertAction(title: title, style: .default) { _ in
+                self.isPopupVisible = false
                 self.handleRoleSelection(selectedRoleKey: roleKey)
             }
             alert.addAction(action)
         }
 
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            self.isPopupVisible = false
+            print("VideoCallViewController: Role selection dialog cancelled")
             TwilioVideoPlugin.getInstance()?.notifyPopupDismissed(popupType: "role", reason: "cancelled")
         }
         alert.addAction(cancelAction)
@@ -573,7 +596,40 @@ class VideoCallViewController: UIViewController {
         }
 
         roleSelectionAlert = alert
-        present(alert, animated: true)
+
+        DispatchQueue.main.async {
+            self.present(alert, animated: true) {
+                print("VideoCallViewController: Role selection dialog presented successfully")
+            }
+        }
+    }
+
+    // MARK: - Helper Methods for Popup Management
+
+    private func checkIfPatientIsPresent() -> Bool {
+        guard let room = room else { return false }
+
+        // Check local participant
+        if let localRole = userRole, localRole == "patient" {
+            return true
+        }
+
+        // Check remote participants
+        for participant in room.remoteParticipants {
+            let participantRole = extractRoleFromIdentity(participant.identity)
+            if participantRole?.lowercased() == "patient" {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func dismissExistingPopups() {
+        roleSelectionAlert?.dismiss(animated: false, completion: nil)
+        userListAlert?.dismiss(animated: false, completion: nil)
+        roleSelectionAlert = nil
+        userListAlert = nil
     }
 
     private func handleRoleSelection(selectedRoleKey: String) {
@@ -620,11 +676,21 @@ class VideoCallViewController: UIViewController {
         DispatchQueue.main.async {
             print("VideoCallViewController: handleUsersList opening list UI on main thread")
 
+            // Guard against multiple presentations
+            guard !self.isPopupVisible else {
+                print("VideoCallViewController: Users list presentation blocked - another popup is already visible")
+                TwilioVideoPlugin.getInstance()?.notifyPopupError(message: "Popup already visible", popupType: "userList")
+                return
+            }
+
+            self.isPopupVisible = true
+
             // Dismiss any existing user list alert
-            self.userListAlert?.dismiss(animated: false, completion: nil)
+            self.dismissExistingPopups()
 
             // Notify that users list is loaded
             TwilioVideoPlugin.getInstance()?.notifyUsersListLoaded(selectedRoleKey: selectedRoleKey, userCount: users.count)
+            print("VideoCallViewController: Users list loaded with \(users.count) users")
 
             if users.isEmpty {
                 print("VideoCallViewController: handleUsersList showing empty list dialog")
@@ -643,11 +709,16 @@ class VideoCallViewController: UIViewController {
             preferredStyle: .alert
         )
 
-        let okAction = UIAlertAction(title: "OK", style: .default)
+        let okAction = UIAlertAction(title: "OK", style: .default) { _ in
+            self.isPopupVisible = false
+            print("VideoCallViewController: Empty user list dialog dismissed")
+        }
         alert.addAction(okAction)
 
         userListAlert = alert
-        present(alert, animated: true)
+        present(alert, animated: true) {
+            print("VideoCallViewController: Empty user list dialog presented")
+        }
     }
 
     private func showUserSelectionDialog(selectedRoleKey: String, users: [[String: String]]) {
@@ -657,12 +728,16 @@ class VideoCallViewController: UIViewController {
             guard let fullName = user["full_name"] else { continue }
 
             let action = UIAlertAction(title: fullName, style: .default) { _ in
+                self.isPopupVisible = false
+                print("VideoCallViewController: User selected: \(fullName)")
                 self.handleUserSelection(selectedUser: user, selectedRoleKey: selectedRoleKey)
             }
             alert.addAction(action)
         }
 
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            self.isPopupVisible = false
+            print("VideoCallViewController: User selection dialog cancelled")
             TwilioVideoPlugin.getInstance()?.notifyPopupDismissed(popupType: "userList", reason: "cancelled")
         }
         alert.addAction(cancelAction)
@@ -674,7 +749,9 @@ class VideoCallViewController: UIViewController {
         }
 
         userListAlert = alert
-        present(alert, animated: true)
+        present(alert, animated: true) {
+            print("VideoCallViewController: User selection dialog presented with \(users.count) users")
+        }
     }
 
     private func handleUserSelection(selectedUser: [String: String], selectedRoleKey: String) {
@@ -703,13 +780,12 @@ class VideoCallViewController: UIViewController {
     private func cleanup() {
         print("Cleaning up resources")
 
-        // Dismiss any open dialogs
-        roleSelectionAlert?.dismiss(animated: false, completion: nil)
-        userListAlert?.dismiss(animated: false, completion: nil)
+        // Restore screen lock behavior
+        restoreScreenLock()
 
-        // Clear references
-        roleSelectionAlert = nil
-        userListAlert = nil
+        // Dismiss any open dialogs and reset state
+        dismissExistingPopups()
+        isPopupVisible = false
         pendingRoleKey = nil
 
         // Cancel any pending dominant speaker updates
@@ -827,6 +903,23 @@ class VideoCallViewController: UIViewController {
         }
     }
 
+    // MARK: - Screen Lock Management
+
+    private func preventScreenLock() {
+        DispatchQueue.main.async {
+            self.wasIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+            UIApplication.shared.isIdleTimerDisabled = true
+            print("VideoCallViewController: Screen lock disabled during active call")
+        }
+    }
+
+    private func restoreScreenLock() {
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = self.wasIdleTimerDisabled
+            print("VideoCallViewController: Screen lock behavior restored")
+        }
+    }
+
     /**
      * Extract role from participant identity
      * Assumes identity format contains role information or returns nil
@@ -856,6 +949,9 @@ extension VideoCallViewController: RoomDelegate {
 
         // Transition to CONNECTED state
         transitionToState(.connected)
+
+        // Prevent screen lock during active call
+        preventScreenLock()
 
         TwilioVideoPlugin.getInstance()?.notifyRoomConnected(roomName: room.name)
 

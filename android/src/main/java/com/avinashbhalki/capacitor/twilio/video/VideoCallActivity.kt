@@ -97,11 +97,7 @@ class VideoCallActivity : AppCompatActivity() {
     private var pendingRoleKey: String? = null
     private var roleSelectionDialog: androidx.appcompat.app.AlertDialog? = null
     private var userListDialog: androidx.appcompat.app.AlertDialog? = null
-
-    // Extended properties for new functionality
-    private var userIdentity: String? = null
-    private var userRole: String? = null
-    private var tenantId: Int? = null
+    private var isPopupVisible = false // Guard against multiple popup presentations
 
     // Participant Rendering Manager
     private val participantRenderers = mutableMapOf<String, ParticipantRenderer>()
@@ -526,6 +522,9 @@ class VideoCallActivity : AppCompatActivity() {
 
             // Transition to CONNECTED state
             transitionToState(CallState.CONNECTED)
+
+            // Prevent screen lock during active call
+            preventScreenLock()
 
             TwilioVideoPlugin.getInstance()?.notifyRoomConnected(room.name)
 
@@ -1178,35 +1177,112 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun showRoleSelectionDialog() {
-        // Dismiss any existing dialogs
-        roleSelectionDialog?.dismiss()
-        userListDialog?.dismiss()
+        // Guard against multiple presentations
+        if (isPopupVisible) {
+            Log.d(TAG, "Popup presentation blocked - another popup is already visible")
+            return
+        }
 
-        val options = arrayOf("MHT", "CCT", "Patient", "Participants")
-        val roleKeys = arrayOf("mht", "cct", "patient", "participant")
+        Log.d(TAG, "Opening role selection dialog")
+
+        // Dismiss any existing dialogs and update state
+        dismissExistingPopups()
+        isPopupVisible = true
+
+        // Check if patient is already present in the call
+        val hasPatientInCall = checkIfPatientIsPresent()
+        Log.d(TAG, "Patient present in call: $hasPatientInCall")
+
+        // Build options and role keys dynamically
+        val optionsList = mutableListOf<String>()
+        val roleKeysList = mutableListOf<String>()
+
+        // Always include MHT and CCT
+        optionsList.add("MHT")
+        roleKeysList.add("mht")
+        optionsList.add("CCT")
+        roleKeysList.add("cct")
+
+        // Only add Patient option if no patient is currently in the call
+        if (!hasPatientInCall) {
+            optionsList.add("Patient")
+            roleKeysList.add("patient")
+        }
+
+        // Always include Participants
+        optionsList.add("Participants")
+        roleKeysList.add("participant")
+
+        val options = optionsList.toTypedArray()
+        val roleKeys = roleKeysList.toTypedArray()
 
         try {
             val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
                 .setTitle("Select Role")
                 .setItems(options) { dialog, which ->
+                    isPopupVisible = false
                     val selectedRoleKey = roleKeys[which]
+                    Log.d(TAG, "Role selected: $selectedRoleKey")
                     handleRoleSelection(selectedRoleKey)
                     dialog.dismiss()
                 }
                 .setOnCancelListener {
+                    isPopupVisible = false
+                    Log.d(TAG, "Role selection dialog cancelled")
                     TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("role", "cancelled")
                 }
 
             roleSelectionDialog = dialogBuilder.create()
             roleSelectionDialog?.show()
+            Log.d(TAG, "Role selection dialog presented successfully")
 
         } catch (e: Exception) {
+            isPopupVisible = false
+            Log.e(TAG, "Failed to show role selection dialog", e)
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show role selection dialog: ${e.message}", "role")
         }
     }
 
-    private fun handleRoleSelection(selectedRoleKey: String) {
-        pendingRoleKey = selectedRoleKey
+    // Helper Methods for Popup Management and Screen Lock
+
+    private fun checkIfPatientIsPresent(): Boolean {
+        // Check local participant
+        if (userRole == "patient") {
+            return true
+        }
+
+        // Check remote participants
+        room?.remoteParticipants?.forEach { participant ->
+            val participantRole = extractRoleFromIdentity(participant.identity)
+            if (participantRole?.lowercase() == "patient") {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun dismissExistingPopups() {
+        roleSelectionDialog?.dismiss()
+        userListDialog?.dismiss()
+        roleSelectionDialog = null
+        userListDialog = null
+    }
+
+    private fun preventScreenLock() {
+        runOnUiThread {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            Log.d(TAG, "Screen lock disabled during active call")
+        }
+    }
+
+    private fun restoreScreenLock() {
+        runOnUiThread {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            Log.d(TAG, "Screen lock behavior restored")
+        }
+    }
+    private fun handleRoleSelection(selectedRoleKey: String) {\n        pendingRoleKey = selectedRoleKey
 
         // Get second participant role and identity (first remote participant)
         var secondParticipantRole: String? = null
@@ -1249,11 +1325,21 @@ class VideoCallActivity : AppCompatActivity() {
         runOnUiThread {
             Log.i(TAG, "handleUsersList opening list UI on main thread")
 
-            // Dismiss any existing user list dialog
-            userListDialog?.dismiss()
+            // Guard against multiple presentations
+            if (isPopupVisible) {
+                Log.d(TAG, "Users list presentation blocked - another popup is already visible")
+                TwilioVideoPlugin.getInstance()?.notifyPopupError("Popup already visible", "userList")
+                return@runOnUiThread
+            }
+
+            isPopupVisible = true
+
+            // Dismiss any existing dialogs
+            dismissExistingPopups()
 
             // Notify that users list is loaded
             TwilioVideoPlugin.getInstance()?.notifyUsersListLoaded(selectedRoleKey, users.size)
+            Log.d(TAG, "Users list loaded with ${users.size} users")
 
             if (users.isEmpty()) {
                 Log.d(TAG, "handleUsersList showing empty list dialog")
@@ -1272,16 +1358,22 @@ class VideoCallActivity : AppCompatActivity() {
                 .setTitle("No Users Available")
                 .setMessage("No data available for the selected role.")
                 .setPositiveButton("OK") { dialog, _ ->
+                    isPopupVisible = false
+                    Log.d(TAG, "Empty user list dialog dismissed")
                     dialog.dismiss()
                 }
                 .setOnCancelListener {
+                    isPopupVisible = false
                     TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("userList", "cancelled")
                 }
 
             userListDialog = dialogBuilder.create()
             userListDialog?.show()
+            Log.d(TAG, "Empty user list dialog presented")
 
         } catch (e: Exception) {
+            isPopupVisible = false
+            Log.e(TAG, "Failed to show empty user list dialog", e)
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show empty user list dialog: ${e.message}", "userList")
         }
     }
@@ -1293,20 +1385,28 @@ class VideoCallActivity : AppCompatActivity() {
             val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
                 .setTitle("Select User")
                 .setItems(userNames) { dialog, which ->
+                    isPopupVisible = false
                     if (which < users.size) {
                         val selectedUser = users[which]
+                        val fullName = selectedUser["full_name"] ?: "Unknown"
+                        Log.d(TAG, "User selected: $fullName")
                         handleUserSelection(selectedUser, selectedRoleKey)
                     }
                     dialog.dismiss()
                 }
                 .setOnCancelListener {
+                    isPopupVisible = false
+                    Log.d(TAG, "User selection dialog cancelled")
                     TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("userList", "cancelled")
                 }
 
             userListDialog = dialogBuilder.create()
             userListDialog?.show()
+            Log.d(TAG, "User selection dialog presented with ${users.size} users")
 
         } catch (e: Exception) {
+            isPopupVisible = false
+            Log.e(TAG, "Failed to show user selection dialog", e)
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show user selection dialog: ${e.message}", "userList")
         }
     }

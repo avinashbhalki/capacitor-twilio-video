@@ -1,18 +1,18 @@
-import type { PluginListenerHandle } from '@capacitor/core';
+import { PluginListenerHandle } from '@capacitor/core';
 
 /**
-* User role types for video calls
-*/
+ * User role types for video calls
+ */
 export type UserRole = 'mht' | 'cct' | 'patient';
 
 /**
-* Role selection keys for popups
-*/
+ * Role selection keys for popups
+ */
 export type RoleSelectionKey = 'mht' | 'cct' | 'patient' | 'participant';
 
 /**
-* Options for joining a Twilio Video room
-*/
+ * Options for joining a Twilio Video room
+ */
 export interface JoinRoomOptions {
   /**
    * The name of the room to join (optional if roomId is provided)
@@ -46,8 +46,8 @@ export interface JoinRoomOptions {
 }
 
 /**
-* User object structure for sendUsersList
-*/
+ * User object structure for sendUsersList
+ */
 export interface User {
   /**
    * Unique identifier
@@ -66,8 +66,8 @@ export interface User {
 }
 
 /**
-* Options for sending users list back to plugin
-*/
+ * Options for sending users list back to plugin
+ */
 export interface SendUsersListOptions {
   /**
    * The selected role key from the first popup
@@ -81,8 +81,8 @@ export interface SendUsersListOptions {
 }
 
 /**
-* Options for muting/unmuting audio
-*/
+ * Options for muting/unmuting audio
+ */
 export interface MuteAudioOptions {
   /**
    * True to mute, false to unmute
@@ -91,8 +91,8 @@ export interface MuteAudioOptions {
 }
 
 /**
-* Options for enabling/disabling video
-*/
+ * Options for enabling/disabling video
+ */
 export interface EnableVideoOptions {
   /**
    * True to enable, false to disable
@@ -101,8 +101,8 @@ export interface EnableVideoOptions {
 }
 
 /**
-* Options for enabling/disabling speaker
-*/
+ * Options for enabling/disabling speaker
+ */
 export interface SetSpeakerOptions {
   /**
    * True to enable speaker, false for earpiece
@@ -111,8 +111,8 @@ export interface SetSpeakerOptions {
 }
 
 /**
-* Event payload when room is connected
-*/
+ * Event payload when room is connected
+ */
 export interface RoomConnectedEvent {
   /**
    * The name of the connected room
@@ -121,8 +121,8 @@ export interface RoomConnectedEvent {
 }
 
 /**
-* Event payload when room is disconnected
-*/
+ * Event payload when room is disconnected
+ */
 export interface RoomDisconnectedEvent {
   /**
    * The complete room object at the time of disconnection
@@ -176,8 +176,8 @@ export interface RoomDisconnectedEvent {
 }
 
 /**
-* Event payload when a participant joins
-*/
+ * Event payload when a participant joins
+ */
 export interface ParticipantJoinedEvent {
   /**
    * The identity of the participant who joined
@@ -186,8 +186,8 @@ export interface ParticipantJoinedEvent {
 }
 
 /**
-* Event payload when a participant leaves
-*/
+ * Event payload when a participant leaves
+ */
 export interface ParticipantLeftEvent {
   /**
    * The identity of the participant who left
@@ -196,8 +196,8 @@ export interface ParticipantLeftEvent {
 }
 
 /**
-* Event payload for network quality changes
-*/
+ * Event payload for network quality changes
+ */
 export interface NetworkQualityChangedEvent {
   /**
    * The identity of the participant
@@ -216,8 +216,8 @@ export interface NetworkQualityChangedEvent {
 }
 
 /**
-* Event payload when dominant speaker changes
-*/
+ * Event payload when dominant speaker changes
+ */
 export interface DominantSpeakerChangedEvent {
   /**
    * The identity of the new dominant speaker, or null if none
@@ -226,8 +226,8 @@ export interface DominantSpeakerChangedEvent {
 }
 
 /**
-* Event payload when room is automatically closed
-*/
+ * Event payload when room is automatically closed
+ */
 export interface RoomAutoClosedEvent {
   /**
    * The reason for auto-closing
@@ -236,8 +236,8 @@ export interface RoomAutoClosedEvent {
 }
 
 /**
-* Event payload for room errors
-*/
+ * Event payload for room errors
+ */
 export interface RoomErrorEvent {
   /**
    * Error code
@@ -256,8 +256,8 @@ export interface RoomErrorEvent {
 }
 
 /**
-* Event payload when a role is selected from the first popup
-*/
+ * Event payload when a role is selected from the first popup
+ */
 export interface RoleSelectedEvent {
   /**
    * The selected role key
@@ -301,8 +301,8 @@ export interface RoleSelectedEvent {
 }
 
 /**
-* Event payload when users list is loaded and second popup is shown
-*/
+ * Event payload when users list is loaded and second popup is shown
+ */
 export interface UsersListLoadedEvent {
   /**
    * The role key for which users are loaded
@@ -316,8 +316,8 @@ export interface UsersListLoadedEvent {
 }
 
 /**
-* Event payload when a user is selected from the second popup
-*/
+ * Event payload when a user is selected from the second popup
+ */
 export interface UserSelectedEvent {
   /**
    * Selected user ID
@@ -361,8 +361,8 @@ export interface UserSelectedEvent {
 }
 
 /**
-* Event payload when popup is dismissed without selection
-*/
+ * Event payload when popup is dismissed without selection
+ */
 export interface PopupDismissedEvent {
   /**
    * Which popup was dismissed ('role' or 'userList')
@@ -376,8 +376,8 @@ export interface PopupDismissedEvent {
 }
 
 /**
-* Event payload for popup errors
-*/
+ * Event payload for popup errors
+ */
 export interface PopupErrorEvent {
   /**
    * Error message
@@ -391,8 +391,8 @@ export interface PopupErrorEvent {
 }
 
 /**
-* Capacitor Twilio Video Plugin Interface
-*/
+ * Capacitor Twilio Video Plugin Interface
+ */
 export interface TwilioVideoPlugin {
   /**
    * Join a Twilio Video room with custom full-screen UI

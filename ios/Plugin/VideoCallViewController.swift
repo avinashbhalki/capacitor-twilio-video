@@ -406,19 +406,32 @@ class VideoCallViewController: UIViewController {
     // MARK: - Room Connection
     private func connectToRoom() {
         guard let token = accessToken, let name = roomName else {
-            print("Missing access token or room name")
+            print("❌ VideoCallViewController: Missing access token or room name")
             return
         }
+
+        // Ensure no existing room connection
+        if let existingRoom = room {
+            print("⚠️ VideoCallViewController: Existing room detected (state: \(existingRoom.state)), cleaning up first")
+            if existingRoom.state == .connected || existingRoom.state == .connecting {
+                existingRoom.disconnect()
+            }
+            cleanup()
+        }
+
+        print("🔗 VideoCallViewController: Connecting to room: \(name) with identity: \(userIdentity ?? "anonymous")")
 
         let connectOptions = ConnectOptions(token: token) { builder in
             builder.roomName = name
 
             if let audioTrack = self.localAudioTrack {
                 builder.audioTracks = [audioTrack]
+                print("🎤 VideoCallViewController: Local audio track attached")
             }
 
             if let videoTrack = self.localVideoTrack {
                 builder.videoTracks = [videoTrack]
+                print("📹 VideoCallViewController: Local video track attached")
             }
 
             builder.isDominantSpeakerEnabled = true
@@ -430,6 +443,7 @@ class VideoCallViewController: UIViewController {
         }
 
         room = TwilioVideoSDK.connect(options: connectOptions, delegate: self)
+        print("🔗 VideoCallViewController: Room connection initiated")
     }
 
     // MARK: - Control Actions
@@ -607,21 +621,36 @@ class VideoCallViewController: UIViewController {
     // MARK: - Helper Methods for Popup Management
 
     private func checkIfPatientIsPresent() -> Bool {
-        guard let room = room else { return false }
+        print("🔍 VideoCallViewController: Checking if patient is present in room (SID: \(room?.sid ?? "nil"))")
 
-        // Check local participant
-        if let localRole = userRole, localRole == "patient" {
-            return true
-        }
-
-        // Check remote participants
-        for participant in room.remoteParticipants {
-            let participantRole = extractRoleFromIdentity(participant.identity)
-            if participantRole?.lowercased() == "patient" {
+        // Check local participant first
+        if let localRole = userRole?.lowercased() {
+            print("🔍 VideoCallViewController: Local participant role: \(localRole)")
+            if localRole == "patient" {
+                print("✅ VideoCallViewController: Patient found - local participant")
                 return true
             }
         }
 
+        // Check ALL remote participants in current room state
+        guard let currentRoom = room else {
+            print("⚠️ VideoCallViewController: No room available for patient check")
+            return false
+        }
+
+        print("🔍 VideoCallViewController: Checking \(currentRoom.remoteParticipants.count) remote participants")
+
+        for participant in currentRoom.remoteParticipants {
+            let participantRole = extractRoleFromIdentity(participant.identity)?.lowercased()
+            print("🔍 VideoCallViewController: Participant \(participant.identity) role: \(participantRole ?? "unknown")")
+
+            if participantRole == "patient" {
+                print("✅ VideoCallViewController: Patient found - remote participant: \(participant.identity)")
+                return true
+            }
+        }
+
+        print("❌ VideoCallViewController: No patient found in current room participants")
         return false
     }
 
@@ -1037,67 +1066,94 @@ extension VideoCallViewController: RoomDelegate {
 // MARK: - Remote Participant Management
 extension VideoCallViewController {
     private func addRemoteParticipant(_ participant: RemoteParticipant) {
-        remoteParticipantCount += 1
-        participant.delegate = self
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
 
-        // Create stable renderer for this participant
-        let renderer = createParticipantRenderer(identity: participant.identity)
-        participantRenderers[participant.identity] = renderer
+            print("➕ VideoCallViewController: Adding remote participant: \(participant.identity) (Thread: \(Thread.isMainThread ? "main" : "background"))")
 
-        print("Added remote participant: \(participant.identity), total: \(remoteParticipantCount)")
-
-        // Update action button visibility
-        updateActionButtonVisibility()
-
-        // Subscribe to existing published video tracks
-        for publication in participant.remoteVideoTracks {
-            if let track = publication.remoteTrack, publication.isTrackSubscribed {
-                addRemoteVideoTrack(participant.identity, track: track)
+            // Ensure we're not adding duplicate participants
+            if self.participantRenderers[participant.identity] != nil {
+                print("⚠️ VideoCallViewController: Participant \(participant.identity) already exists, skipping")
+                return
             }
-        }
 
-        // Update focused participant if this is first remote or no selection yet
-        if focusedParticipantIdentity == nil || focusedParticipantIdentity == "local" {
-            // Auto-focus on first remote participant
-            updateFocusedParticipant(participant.identity, isUserSelection: false)
+            self.remoteParticipantCount += 1
+            participant.delegate = self
+
+            // Create stable renderer for this participant
+            let renderer = self.createParticipantRenderer(identity: participant.identity)
+            self.participantRenderers[participant.identity] = renderer
+
+            print("✅ VideoCallViewController: Added remote participant: \(participant.identity), total: \(self.remoteParticipantCount)")
+
+            // Update action button visibility
+            self.updateActionButtonVisibility()
+
+            // Subscribe to existing published video tracks
+            for publication in participant.remoteVideoTracks {
+                if let track = publication.remoteTrack, publication.isTrackSubscribed {
+                    print("📹 VideoCallViewController: Subscribing to existing video track for: \(participant.identity)")
+                    self.addRemoteVideoTrack(participant.identity, track: track)
+                }
+            }
+
+            // Update focused participant if this is first remote or no selection yet
+            if self.focusedParticipantIdentity == nil || self.focusedParticipantIdentity == "local" {
+                // Auto-focus on first remote participant
+                self.updateFocusedParticipant(participant.identity, isUserSelection: false)
+            }
         }
     }
 
     private func removeRemoteParticipant(_ participant: RemoteParticipant) {
-        remoteParticipantCount -= 1
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
 
-        print("Removing participant: \(participant.identity), remaining: \(remoteParticipantCount)")
-
-        // Update action button visibility
-        updateActionButtonVisibility()
-
-        // Unsubscribe from video tracks
-        for publication in participant.remoteVideoTracks {
-            if let track = publication.remoteTrack, publication.isTrackSubscribed {
-                removeRemoteVideoTrack(participant.identity, track: track)
+            // Check if participant exists
+            guard self.participantRenderers[participant.identity] != nil else {
+                print("⚠️ VideoCallViewController: Participant \(participant.identity) not found in renderers, skipping removal")
+                return
             }
-        }
 
-        // Remove renderer and clean up views
-        if let renderer = participantRenderers.removeValue(forKey: participant.identity) {
-            DispatchQueue.main.async {
-                // Remove from primary container if displayed there
+            self.remoteParticipantCount = max(0, self.remoteParticipantCount - 1)
+
+            print("🗑️ VideoCallViewController: Removing participant: \(participant.identity), remaining: \(self.remoteParticipantCount)")
+
+            // Update action button visibility
+            self.updateActionButtonVisibility()
+
+            // Unsubscribe from video tracks with error handling
+            for publication in participant.remoteVideoTracks {
+                if let track = publication.remoteTrack, publication.isTrackSubscribed {
+                    do {
+                        self.removeRemoteVideoTrack(participant.identity, track: track)
+                    } catch {
+                        print("⚠️ VideoCallViewController: Error removing video track for \(participant.identity): \(error)")
+                    }
+                }
+            }
+
+            // Remove renderer and clean up views with safety checks
+            if let renderer = self.participantRenderers.removeValue(forKey: participant.identity) {
+                // Clean up video view and renderer
                 if renderer.isFocused {
                     renderer.videoView.removeFromSuperview()
                 }
-                // Remove from thumbnail grid
                 renderer.videoView.removeFromSuperview()
+
+                // Clean up any remaining tracks
+                renderer.videoView.track = nil
             }
-        }
 
-        // If this was the focused participant, switch focus
-        if focusedParticipantIdentity == participant.identity {
-            selectNewFocusedParticipant()
-        }
+            // If this was the focused participant, switch focus
+            if self.focusedParticipantIdentity == participant.identity {
+                self.selectNewFocusedParticipant()
+            }
 
-        // Update dominant speaker if it was this participant
-        if dominantSpeakerIdentity == participant.identity {
-            dominantSpeakerIdentity = nil
+            // Update dominant speaker if it was this participant
+            if self.dominantSpeakerIdentity == participant.identity {
+                self.dominantSpeakerIdentity = nil
+            }
         }
     }
 

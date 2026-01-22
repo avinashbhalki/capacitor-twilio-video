@@ -480,6 +480,17 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun connectToRoom() {
+        // Ensure no existing room connection
+        room?.let { existingRoom ->
+            Log.w(TAG, "⚠️ Existing room detected (state: ${existingRoom.state}), cleaning up first")
+            if (existingRoom.state == Room.State.CONNECTED || existingRoom.state == Room.State.CONNECTING) {
+                existingRoom.disconnect()
+            }
+            cleanup()
+        }
+
+        Log.d(TAG, "🔗 Connecting to room: $roomName with identity: ${userIdentity ?: "anonymous"}")
+
         val connectOptions = ConnectOptions.Builder(accessToken!!)
             .roomName(roomName)
             .audioTracks(listOfNotNull(localAudioTrack))
@@ -495,7 +506,15 @@ class VideoCallActivity : AppCompatActivity() {
             .roomListener(roomListener)
             .build()
 
+        if (localAudioTrack != null) {
+            Log.d(TAG, "🎤 Local audio track attached")
+        }
+        if (localVideoTrack != null) {
+            Log.d(TAG, "📹 Local video track attached")
+        }
+
         room = Video.connect(this, connectOptions)
+        Log.d(TAG, "🔗 Room connection initiated")
     }
 
     /**
@@ -623,71 +642,104 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun addRemoteParticipant(participant: RemoteParticipant) {
-        remoteParticipantCount++
-        participant.setListener(remoteParticipantListener)
-
-        // Create stable renderer for this participant
-        val renderer = createParticipantRenderer(participant.identity)
-        participantRenderers[participant.identity] = renderer
-
-        Log.d(TAG, "Added remote participant: ${participant.identity}, total: $remoteParticipantCount")
-
-        // Update action button visibility
-        updateActionButtonVisibility()
-
-        // Subscribe to existing published video tracks
-        participant.remoteVideoTracks.forEach { publication ->
-            if (publication.isTrackSubscribed) {
-                publication.remoteVideoTrack?.let { track ->
-                    addRemoteVideoTrack(participant.identity, track)
+        runOnUiThread {
+            try {
+                // Prevent duplicate additions
+                if (participantRenderers.containsKey(participant.identity)) {
+                    Log.w(TAG, "⚠️ Participant ${participant.identity} already exists, skipping add")
+                    return@runOnUiThread
                 }
-            }
-        }
 
-        // Update focused participant if this is first remote or no selection yet
-        if (focusedParticipantIdentity == null || focusedParticipantIdentity == "local") {
-            // Auto-focus on first remote participant
-            updateFocusedParticipant(participant.identity, isUserSelection = false)
+                remoteParticipantCount++
+                participant.setListener(remoteParticipantListener)
+
+                // Create stable renderer for this participant
+                val renderer = createParticipantRenderer(participant.identity)
+                participantRenderers[participant.identity] = renderer
+
+                Log.d(TAG, "✅ Added remote participant: ${participant.identity}, total: $remoteParticipantCount")
+
+                // Update action button visibility
+                updateActionButtonVisibility()
+
+                // Subscribe to existing published video tracks
+                participant.remoteVideoTracks.forEach { publication ->
+                    if (publication.isTrackSubscribed) {
+                        publication.remoteVideoTrack?.let { track ->
+                            addRemoteVideoTrack(participant.identity, track)
+                        }
+                    }
+                }
+
+                // Update focused participant if this is first remote or no selection yet
+                if (focusedParticipantIdentity == null || focusedParticipantIdentity == "local") {
+                    // Auto-focus on first remote participant
+                    updateFocusedParticipant(participant.identity, isUserSelection = false)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error adding remote participant ${participant.identity}", e)
+            }
         }
     }
 
     private fun removeRemoteParticipant(participant: RemoteParticipant) {
-        remoteParticipantCount--
-
-        Log.d(TAG, "Removing participant: ${participant.identity}, remaining: $remoteParticipantCount")
-
-        // Update action button visibility
-        updateActionButtonVisibility()
-
-        // Unsubscribe from video tracks
-        participant.remoteVideoTracks.forEach { publication ->
-            if (publication.isTrackSubscribed) {
-                publication.remoteVideoTrack?.let { track ->
-                    removeRemoteVideoTrack(participant.identity, track)
+        runOnUiThread {
+            try {
+                // Check if participant exists
+                if (!participantRenderers.containsKey(participant.identity)) {
+                    Log.w(TAG, "⚠️ Participant ${participant.identity} not found in renderers, skipping removal")
+                    return@runOnUiThread
                 }
-            }
-        }
 
-        // Remove renderer and clean up views
-        participantRenderers.remove(participant.identity)?.let { renderer ->
-            runOnUiThread {
-                // Remove from primary container if displayed there
-                if (renderer.isFocused) {
-                    primaryVideoContainer.removeView(renderer.videoView)
+                remoteParticipantCount = maxOf(0, remoteParticipantCount - 1)
+
+                Log.d(TAG, "🗑️ Removing participant: ${participant.identity}, remaining: $remoteParticipantCount")
+
+                // Update action button visibility
+                updateActionButtonVisibility()
+
+                // Unsubscribe from video tracks with safety checks
+                try {
+                    participant.remoteVideoTracks.forEach { publication ->
+                        if (publication.isTrackSubscribed) {
+                            publication.remoteVideoTrack?.let { track ->
+                                removeRemoteVideoTrack(participant.identity, track)
+                            }
+                        }
+                    }
+                } catch (trackException: Exception) {
+                    Log.w(TAG, "⚠️ Error unsubscribing from tracks for ${participant.identity}", trackException)
                 }
-                // Remove from thumbnail grid
-                thumbnailGridContainer.removeView(renderer.videoView)
+
+                // Remove renderer and clean up views
+                participantRenderers.remove(participant.identity)?.let { renderer ->
+                    try {
+                        // Remove from primary container if displayed there
+                        if (renderer.isFocused) {
+                            primaryVideoContainer.removeView(renderer.videoView)
+                        }
+                        // Remove from thumbnail grid
+                        thumbnailGridContainer.removeView(renderer.videoView)
+
+                        // Clean up any track attachments
+                        renderer.videoView.release()
+                    } catch (viewException: Exception) {
+                        Log.w(TAG, "⚠️ Error cleaning up views for ${participant.identity}", viewException)
+                    }
+                }
+
+                // If this was the focused participant, switch focus
+                if (focusedParticipantIdentity == participant.identity) {
+                    selectNewFocusedParticipant()
+                }
+
+                // Update dominant speaker if it was this participant
+                if (dominantSpeakerIdentity == participant.identity) {
+                    dominantSpeakerIdentity = null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error removing remote participant ${participant.identity}", e)
             }
-        }
-
-        // If this was the focused participant, switch focus
-        if (focusedParticipantIdentity == participant.identity) {
-            selectNewFocusedParticipant()
-        }
-
-        // Update dominant speaker if it was this participant
-        if (dominantSpeakerIdentity == participant.identity) {
-            dominantSpeakerIdentity = null
         }
     }
 
@@ -1246,19 +1298,38 @@ class VideoCallActivity : AppCompatActivity() {
     // Helper Methods for Popup Management and Screen Lock
 
     private fun checkIfPatientIsPresent(): Boolean {
-        // Check local participant
-        if (userRole == "patient") {
-            return true
-        }
+        Log.d(TAG, "🔍 Checking if patient is present in room (SID: ${room?.sid ?: "null"})")
 
-        // Check remote participants
-        room?.remoteParticipants?.forEach { participant ->
-            val participantRole = extractRoleFromIdentity(participant.identity)
-            if (participantRole?.lowercase() == "patient") {
+        // Check local participant first
+        userRole?.let { role ->
+            Log.d(TAG, "🔍 Local participant role: $role")
+            if (role.lowercase() == "patient") {
+                Log.d(TAG, "✅ Patient found - local participant")
                 return true
             }
         }
 
+        // Check ALL remote participants using current room state
+        val currentRoom = room
+        if (currentRoom == null) {
+            Log.w(TAG, "⚠️ No room available for patient check")
+            return false
+        }
+
+        val remoteParticipants = currentRoom.remoteParticipants
+        Log.d(TAG, "🔍 Checking ${remoteParticipants.size} remote participants")
+
+        for (participant in remoteParticipants) {
+            val participantRole = extractRoleFromIdentity(participant.identity)?.lowercase()
+            Log.d(TAG, "🔍 Participant ${participant.identity} role: ${participantRole ?: "unknown"}")
+
+            if (participantRole == "patient") {
+                Log.d(TAG, "✅ Patient found - remote participant: ${participant.identity}")
+                return true
+            }
+        }
+
+        Log.d(TAG, "❌ No patient found in current room participants")
         return false
     }
 

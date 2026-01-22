@@ -97,7 +97,11 @@ class VideoCallActivity : AppCompatActivity() {
     private var pendingRoleKey: String? = null
     private var roleSelectionDialog: androidx.appcompat.app.AlertDialog? = null
     private var userListDialog: androidx.appcompat.app.AlertDialog? = null
-    private var isPopupVisible = false // Guard against multiple popup presentations
+
+    // Extended properties for new functionality
+    private var userIdentity: String? = null
+    private var userRole: String? = null
+    private var tenantId: Int? = null
 
     // Participant Rendering Manager
     private val participantRenderers = mutableMapOf<String, ParticipantRenderer>()
@@ -480,31 +484,6 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun connectToRoom() {
-        // CRITICAL: Prevent joining if already in a room or transitioning
-        if (callState == CallState.JOINING || callState == CallState.CONNECTED) {
-            Log.w(TAG, "⚠️ Already joining/connected to room, ignoring connect request (state: $callState)")
-            return
-        }
-
-        // Ensure no existing room connection with proper cleanup
-        room?.let { existingRoom ->
-            Log.w(TAG, "⚠️ Existing room detected (state: ${existingRoom.state}), cleaning up first")
-            if (existingRoom.state == Room.State.CONNECTED || existingRoom.state == Room.State.CONNECTING) {
-                existingRoom.disconnect()
-                // Wait for proper disconnection before proceeding
-                mainHandler.postDelayed({
-                    connectToRoom()
-                }, 500)
-                return
-            }
-            cleanup()
-        }
-
-        Log.d(TAG, "🔗 Connecting to room: $roomName with identity: ${userIdentity ?: "anonymous"} (Thread: ${if (Looper.myLooper() == Looper.getMainLooper()) "main" else "background"})")
-
-        // Set state BEFORE attempting connection
-        callState = CallState.JOINING
-
         val connectOptions = ConnectOptions.Builder(accessToken!!)
             .roomName(roomName)
             .audioTracks(listOfNotNull(localAudioTrack))
@@ -520,15 +499,7 @@ class VideoCallActivity : AppCompatActivity() {
             .roomListener(roomListener)
             .build()
 
-        if (localAudioTrack != null) {
-            Log.d(TAG, "🎤 Local audio track attached")
-        }
-        if (localVideoTrack != null) {
-            Log.d(TAG, "📹 Local video track attached")
-        }
-
         room = Video.connect(this, connectOptions)
-        Log.d(TAG, "🔗 Room connection initiated")
     }
 
     /**
@@ -555,9 +526,6 @@ class VideoCallActivity : AppCompatActivity() {
 
             // Transition to CONNECTED state
             transitionToState(CallState.CONNECTED)
-
-            // Prevent screen lock during active call
-            preventScreenLock()
 
             TwilioVideoPlugin.getInstance()?.notifyRoomConnected(room.name)
 
@@ -656,109 +624,71 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun addRemoteParticipant(participant: RemoteParticipant) {
-        runOnUiThread {
-            try {
-                // Prevent duplicate additions
-                if (participantRenderers.containsKey(participant.identity)) {
-                    Log.w(TAG, "⚠️ Participant ${participant.identity} already exists, skipping add")
-                    return@runOnUiThread
+        remoteParticipantCount++
+        participant.setListener(remoteParticipantListener)
+
+        // Create stable renderer for this participant
+        val renderer = createParticipantRenderer(participant.identity)
+        participantRenderers[participant.identity] = renderer
+
+        Log.d(TAG, "Added remote participant: ${participant.identity}, total: $remoteParticipantCount")
+
+        // Update action button visibility
+        updateActionButtonVisibility()
+
+        // Subscribe to existing published video tracks
+        participant.remoteVideoTracks.forEach { publication ->
+            if (publication.isTrackSubscribed) {
+                publication.remoteVideoTrack?.let { track ->
+                    addRemoteVideoTrack(participant.identity, track)
                 }
-
-                remoteParticipantCount++
-                participant.setListener(remoteParticipantListener)
-
-                // Create stable renderer for this participant
-                val renderer = createParticipantRenderer(participant.identity)
-                participantRenderers[participant.identity] = renderer
-
-                Log.d(TAG, "✅ Added remote participant: ${participant.identity}, total: $remoteParticipantCount")
-
-                // Update action button visibility
-                updateActionButtonVisibility()
-
-                // Subscribe to existing published video tracks
-                participant.remoteVideoTracks.forEach { publication ->
-                    if (publication.isTrackSubscribed) {
-                        publication.remoteVideoTrack?.let { track ->
-                            addRemoteVideoTrack(participant.identity, track)
-                        }
-                    }
-                }
-
-                // Update focused participant if this is first remote or no selection yet
-                if (focusedParticipantIdentity == null || focusedParticipantIdentity == "local") {
-                    // Auto-focus on first remote participant
-                    updateFocusedParticipant(participant.identity, isUserSelection = false)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error adding remote participant ${participant.identity}", e)
             }
+        }
+
+        // Update focused participant if this is first remote or no selection yet
+        if (focusedParticipantIdentity == null || focusedParticipantIdentity == "local") {
+            // Auto-focus on first remote participant
+            updateFocusedParticipant(participant.identity, isUserSelection = false)
         }
     }
 
     private fun removeRemoteParticipant(participant: RemoteParticipant) {
-        runOnUiThread {
-            try {
-                // Check if participant exists
-                if (!participantRenderers.containsKey(participant.identity)) {
-                    Log.w(TAG, "⚠️ Participant ${participant.identity} not found in renderers, skipping removal")
-                    return@runOnUiThread
+        remoteParticipantCount--
+
+        Log.d(TAG, "Removing participant: ${participant.identity}, remaining: $remoteParticipantCount")
+
+        // Update action button visibility
+        updateActionButtonVisibility()
+
+        // Unsubscribe from video tracks
+        participant.remoteVideoTracks.forEach { publication ->
+            if (publication.isTrackSubscribed) {
+                publication.remoteVideoTrack?.let { track ->
+                    removeRemoteVideoTrack(participant.identity, track)
                 }
-
-                remoteParticipantCount = maxOf(0, remoteParticipantCount - 1)
-
-                Log.d(TAG, "🗑️ Removing participant: ${participant.identity}, remaining: $remoteParticipantCount")
-
-                // Update action button visibility
-                updateActionButtonVisibility()
-
-                // Unsubscribe from video tracks with safety checks
-                try {
-                    participant.remoteVideoTracks.forEach { publication ->
-                        if (publication.isTrackSubscribed) {
-                            publication.remoteVideoTrack?.let { track ->
-                                removeRemoteVideoTrack(participant.identity, track)
-                            }
-                        }
-                    }
-                } catch (trackException: Exception) {
-                    Log.w(TAG, "⚠️ Error unsubscribing from tracks for ${participant.identity}", trackException)
-                }
-
-                // Remove renderer and clean up views
-                participantRenderers.remove(participant.identity)?.let { renderer ->
-                    try {
-                        // Remove from primary container if displayed there
-                        if (renderer.isFocused) {
-                            primaryVideoContainer.removeView(renderer.videoView)
-                        }
-                        // Remove from thumbnail grid
-                        thumbnailGridContainer.removeView(renderer.videoView)
-
-                        // Clean up any track attachments safely
-                        try {
-                            renderer.videoView.release()
-                            Log.d(TAG, "🗑️ VideoView released for ${participant.identity}")
-                        } catch (releaseException: Exception) {
-                            Log.w(TAG, "⚠️ Error releasing VideoView for ${participant.identity}", releaseException)
-                        }
-                    } catch (viewException: Exception) {
-                        Log.w(TAG, "⚠️ Error cleaning up views for ${participant.identity}", viewException)
-                    }
-                }
-
-                // If this was the focused participant, switch focus
-                if (focusedParticipantIdentity == participant.identity) {
-                    selectNewFocusedParticipant()
-                }
-
-                // Update dominant speaker if it was this participant
-                if (dominantSpeakerIdentity == participant.identity) {
-                    dominantSpeakerIdentity = null
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error removing remote participant ${participant.identity}", e)
             }
+        }
+
+        // Remove renderer and clean up views
+        participantRenderers.remove(participant.identity)?.let { renderer ->
+            runOnUiThread {
+                // Remove from primary container if displayed there
+                if (renderer.isFocused) {
+                    primaryVideoContainer.removeView(renderer.videoView)
+                }
+                // Remove from thumbnail grid
+                thumbnailGridContainer.removeView(renderer.videoView)
+            }
+        }
+
+        // If this was the focused participant, switch focus
+        if (focusedParticipantIdentity == participant.identity) {
+            selectNewFocusedParticipant()
+        }
+
+        // Update dominant speaker if it was this participant
+        if (dominantSpeakerIdentity == participant.identity) {
+            dominantSpeakerIdentity = null
         }
     }
 
@@ -1248,131 +1178,35 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun showRoleSelectionDialog() {
-        // Guard against multiple presentations
-        if (isPopupVisible) {
-            Log.d(TAG, "Popup presentation blocked - another popup is already visible")
-            return
-        }
+        // Dismiss any existing dialogs
+        roleSelectionDialog?.dismiss()
+        userListDialog?.dismiss()
 
-        Log.d(TAG, "Opening role selection dialog")
-
-        // Dismiss any existing dialogs and update state
-        dismissExistingPopups()
-        isPopupVisible = true
-
-        // Check if patient is already present in the call
-        val hasPatientInCall = checkIfPatientIsPresent()
-        Log.d(TAG, "Patient present in call: $hasPatientInCall")
-
-        // Build options and role keys dynamically
-        val optionsList = mutableListOf<String>()
-        val roleKeysList = mutableListOf<String>()
-
-        // Always include MHT and CCT
-        optionsList.add("MHT")
-        roleKeysList.add("mht")
-        optionsList.add("CCT")
-        roleKeysList.add("cct")
-
-        // Only add Patient option if no patient is currently in the call
-        if (!hasPatientInCall) {
-            optionsList.add("Patient")
-            roleKeysList.add("patient")
-        }
-
-        // Always include Participants
-        optionsList.add("Participants")
-        roleKeysList.add("participant")
-
-        val options = optionsList.toTypedArray()
-        val roleKeys = roleKeysList.toTypedArray()
+        val options = arrayOf("MHT", "CCT", "Patient", "Participants")
+        val roleKeys = arrayOf("mht", "cct", "patient", "participant")
 
         try {
             val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
                 .setTitle("Select Role")
                 .setItems(options) { dialog, which ->
-                    isPopupVisible = false
                     val selectedRoleKey = roleKeys[which]
-                    Log.d(TAG, "Role selected: $selectedRoleKey")
                     handleRoleSelection(selectedRoleKey)
                     dialog.dismiss()
                 }
                 .setOnCancelListener {
-                    isPopupVisible = false
-                    Log.d(TAG, "Role selection dialog cancelled")
                     TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("role", "cancelled")
                 }
 
             roleSelectionDialog = dialogBuilder.create()
             roleSelectionDialog?.show()
-            Log.d(TAG, "Role selection dialog presented successfully")
 
         } catch (e: Exception) {
-            isPopupVisible = false
-            Log.e(TAG, "Failed to show role selection dialog", e)
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show role selection dialog: ${e.message}", "role")
         }
     }
 
-    // Helper Methods for Popup Management and Screen Lock
-
-    private fun checkIfPatientIsPresent(): Boolean {
-        Log.d(TAG, "🔍 Checking if patient is present in room (SID: ${room?.sid ?: "null"})")
-
-        // Check local participant first
-        userRole?.let { role ->
-            Log.d(TAG, "🔍 Local participant role: $role")
-            if (role.lowercase() == "patient") {
-                Log.d(TAG, "✅ Patient found - local participant")
-                return true
-            }
-        }
-
-        // Check ALL remote participants using current room state
-        val currentRoom = room
-        if (currentRoom == null) {
-            Log.w(TAG, "⚠️ No room available for patient check")
-            return false
-        }
-
-        val remoteParticipants = currentRoom.remoteParticipants
-        Log.d(TAG, "🔍 Checking ${remoteParticipants.size} remote participants")
-
-        for (participant in remoteParticipants) {
-            val participantRole = extractRoleFromIdentity(participant.identity)?.lowercase()
-            Log.d(TAG, "🔍 Participant ${participant.identity} role: ${participantRole ?: "unknown"}")
-
-            if (participantRole == "patient") {
-                Log.d(TAG, "✅ Patient found - remote participant: ${participant.identity}")
-                return true
-            }
-        }
-
-        Log.d(TAG, "❌ No patient found in current room participants")
-        return false
-    }
-
-    private fun dismissExistingPopups() {
-        roleSelectionDialog?.dismiss()
-        userListDialog?.dismiss()
-        roleSelectionDialog = null
-        userListDialog = null
-    }
-
-    private fun preventScreenLock() {
-        runOnUiThread {
-            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            Log.d(TAG, "Screen lock disabled during active call")
-        }
-    }
-
-    private fun restoreScreenLock() {
-        runOnUiThread {
-            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            Log.d(TAG, "Screen lock behavior restored")
-        }
-    }
-    private fun handleRoleSelection(selectedRoleKey: String) {\n        pendingRoleKey = selectedRoleKey
+    private fun handleRoleSelection(selectedRoleKey: String) {
+        pendingRoleKey = selectedRoleKey
 
         // Get second participant role and identity (first remote participant)
         var secondParticipantRole: String? = null
@@ -1415,21 +1249,11 @@ class VideoCallActivity : AppCompatActivity() {
         runOnUiThread {
             Log.i(TAG, "handleUsersList opening list UI on main thread")
 
-            // Guard against multiple presentations
-            if (isPopupVisible) {
-                Log.d(TAG, "Users list presentation blocked - another popup is already visible")
-                TwilioVideoPlugin.getInstance()?.notifyPopupError("Popup already visible", "userList")
-                return@runOnUiThread
-            }
-
-            isPopupVisible = true
-
-            // Dismiss any existing dialogs
-            dismissExistingPopups()
+            // Dismiss any existing user list dialog
+            userListDialog?.dismiss()
 
             // Notify that users list is loaded
             TwilioVideoPlugin.getInstance()?.notifyUsersListLoaded(selectedRoleKey, users.size)
-            Log.d(TAG, "Users list loaded with ${users.size} users")
 
             if (users.isEmpty()) {
                 Log.d(TAG, "handleUsersList showing empty list dialog")
@@ -1448,22 +1272,16 @@ class VideoCallActivity : AppCompatActivity() {
                 .setTitle("No Users Available")
                 .setMessage("No data available for the selected role.")
                 .setPositiveButton("OK") { dialog, _ ->
-                    isPopupVisible = false
-                    Log.d(TAG, "Empty user list dialog dismissed")
                     dialog.dismiss()
                 }
                 .setOnCancelListener {
-                    isPopupVisible = false
                     TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("userList", "cancelled")
                 }
 
             userListDialog = dialogBuilder.create()
             userListDialog?.show()
-            Log.d(TAG, "Empty user list dialog presented")
 
         } catch (e: Exception) {
-            isPopupVisible = false
-            Log.e(TAG, "Failed to show empty user list dialog", e)
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show empty user list dialog: ${e.message}", "userList")
         }
     }
@@ -1475,28 +1293,20 @@ class VideoCallActivity : AppCompatActivity() {
             val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
                 .setTitle("Select User")
                 .setItems(userNames) { dialog, which ->
-                    isPopupVisible = false
                     if (which < users.size) {
                         val selectedUser = users[which]
-                        val fullName = selectedUser["full_name"] ?: "Unknown"
-                        Log.d(TAG, "User selected: $fullName")
                         handleUserSelection(selectedUser, selectedRoleKey)
                     }
                     dialog.dismiss()
                 }
                 .setOnCancelListener {
-                    isPopupVisible = false
-                    Log.d(TAG, "User selection dialog cancelled")
                     TwilioVideoPlugin.getInstance()?.notifyPopupDismissed("userList", "cancelled")
                 }
 
             userListDialog = dialogBuilder.create()
             userListDialog?.show()
-            Log.d(TAG, "User selection dialog presented with ${users.size} users")
 
         } catch (e: Exception) {
-            isPopupVisible = false
-            Log.e(TAG, "Failed to show user selection dialog", e)
             TwilioVideoPlugin.getInstance()?.notifyPopupError("Failed to show user selection dialog: ${e.message}", "userList")
         }
     }
@@ -1523,118 +1333,62 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun cleanup() {
-        Log.d(TAG, "🧹 Starting resource cleanup (Thread: ${if (Looper.myLooper() == Looper.getMainLooper()) "main" else "background"})")
-
-        // Restore screen lock behavior first
-        restoreScreenLock()
-
-        // Dismiss any open dialogs and reset state
-        roleSelectionDialog?.dismiss()
-        userListDialog?.dismiss()
-        roleSelectionDialog = null
-        userListDialog = null
-        pendingRoleKey = null
+        Log.d(TAG, "Cleaning up resources")
 
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceRunnable?.let { mainHandler.removeCallbacks(it) }
         dominantSpeakerDebounceRunnable = null
 
-        // CRITICAL: Clean up all participant renderers BEFORE releasing room
-        for ((identity, renderer) in participantRenderers) {
-            Log.d(TAG, "🗑️ Cleaning up renderer for: $identity")
+        // Clean up local media
+        localVideoTrack?.let {
+            it.removeSink(localThumbnailView)
+            it.release()
+        }
+        localVideoTrack = null
 
-            // Detach video track from renderer safely
-            renderer.videoTrack?.let { track ->
-                try {
-                    track.removeSink(renderer.videoView)
-                    Log.d(TAG, "📹 Video sink removed for: $identity")
-                } catch (e: Exception) {
-                    Log.w(TAG, "⚠️ Error removing video sink for $identity", e)
-                }
-            }
+        localAudioTrack?.release()
+        localAudioTrack = null
 
-            // Remove from UI on main thread
-            runOnUiThread {
-                try {
-                    primaryVideoContainer.removeView(renderer.videoView)
-                    thumbnailGridContainer.removeView(renderer.videoView)
-                    renderer.videoView.release()
-                } catch (e: Exception) {
-                    Log.w(TAG, "⚠️ Error cleaning up UI for $identity", e)
-                }
+        cameraCapturer?.stopCapture()
+        cameraCapturer = null
+
+        // Clean up all participant renderers
+        runOnUiThread {
+            participantRenderers.values.forEach { renderer ->
+                renderer.videoTrack?.removeSink(renderer.videoView)
+                primaryVideoContainer.removeView(renderer.videoView)
+                thumbnailGridContainer.removeView(renderer.videoView)
             }
         }
         participantRenderers.clear()
 
-        // Clean up local media safely
-        localVideoTrack?.let { track ->
-            try {
-                track.removeSink(localThumbnailView)
-                track.release()
-                Log.d(TAG, "📹 Local video track released")
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Error releasing local video track", e)
-            }
-        }
-        localVideoTrack = null
-
-        localAudioTrack?.let { track ->
-            try {
-                track.release()
-                Log.d(TAG, "🎤 Local audio track released")
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Error releasing local audio track", e)
-            }
-        }
-        localAudioTrack = null
-
-        // Stop camera capture safely
-        cameraCapturer?.let { capturer ->
-            try {
-                capturer.stopCapture()
-                Log.d(TAG, "📷 Camera stopped successfully")
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Camera stop error", e)
-            }
-        }
-        cameraCapturer = null
-
-        // Reset state variables
+        // Reset state
         dominantSpeakerIdentity = null
         focusedParticipantIdentity = null
         userHasSelectedParticipant = false
 
-        // Clean up audio safely
+        // Clean up audio
         audioManager?.let { am ->
-            try {
-                if (isBluetoothScoOn) {
-                    am.stopBluetoothSco()
-                    am.isBluetoothScoOn = false
-                    isBluetoothScoOn = false
-                }
-                am.mode = AudioManager.MODE_NORMAL
-                Log.d(TAG, "🔊 Audio manager cleaned up")
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Error cleaning up audio manager", e)
+            if (isBluetoothScoOn) {
+                am.stopBluetoothSco()
+                am.isBluetoothScoOn = false
+                isBluetoothScoOn = false
             }
+            am.mode = AudioManager.MODE_NORMAL
         }
 
-        // Unregister Bluetooth receiver safely
+        // Unregister Bluetooth receiver
         bluetoothReceiver?.let {
             try {
                 unregisterReceiver(it)
-                Log.d(TAG, "📶 Bluetooth receiver unregistered")
             } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Error unregistering Bluetooth receiver: ${e.message}")
+                Log.w(TAG, "Error unregistering Bluetooth receiver: ${e.message}")
             }
         }
         bluetoothReceiver = null
 
-        // Clear room and participant references
         room = null
         localParticipant = null
-
-        Log.d(TAG, "✅ Resource cleanup completed")
     }
 
     override fun onDestroy() {

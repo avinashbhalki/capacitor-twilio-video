@@ -508,15 +508,38 @@ class VideoCallActivity : AppCompatActivity() {
      */
     private fun extractRoleFromIdentity(identity: String?): String? {
         if (identity.isNullOrEmpty()) return null
-        // If identity contains role information in a known format, extract it
-        // This is a placeholder - implement according to your identity format
-        // For example, if identity is "user@MHT" or "user_MHT" extract "MHT"
-        return when {
-            identity.contains("@MHT") || identity.endsWith("_MHT") -> "MHT"
-            identity.contains("@CCT") || identity.endsWith("_CCT") -> "CCT"
-            identity.contains("@Patient") || identity.endsWith("_Patient") -> "Patient"
-            else -> null // Role information not available in identity
+
+        val lowercasedIdentity = identity.lowercase()
+
+        // Check for patient role with multiple possible formats
+        if (lowercasedIdentity.contains("patient") ||
+            lowercasedIdentity.contains("@patient") ||
+            lowercasedIdentity.endsWith("_patient") ||
+            lowercasedIdentity.startsWith("patient_") ||
+            lowercasedIdentity.startsWith("patient@")) {
+            return "patient"
         }
+
+        // Check for MHT role
+        if (lowercasedIdentity.contains("@mht") ||
+            lowercasedIdentity.endsWith("_mht") ||
+            lowercasedIdentity.startsWith("mht_") ||
+            lowercasedIdentity.startsWith("mht@") ||
+            lowercasedIdentity.contains("mht")) {
+            return "mht"
+        }
+
+        // Check for CCT role
+        if (lowercasedIdentity.contains("@cct") ||
+            lowercasedIdentity.endsWith("_cct") ||
+            lowercasedIdentity.startsWith("cct_") ||
+            lowercasedIdentity.startsWith("cct@") ||
+            lowercasedIdentity.contains("cct")) {
+            return "cct"
+        }
+
+        // No recognized role found
+        return null
     }
 
     private val roomListener = object : Room.Listener {
@@ -1356,38 +1379,42 @@ class VideoCallActivity : AppCompatActivity() {
     // Helper Methods for Popup Management and Screen Lock
 
     private fun checkIfPatientIsPresent(): Boolean {
-        Log.d(TAG, "🔍 Checking if patient is present in room (SID: ${room?.sid ?: "null"})")
+        Log.d(TAG, "🔍 VideoCallActivity: Checking if patient is present in room (SID: ${room?.sid ?: "null"})")
+        Log.d(TAG, "🔍 VideoCallActivity: Current room state: ${if (room != null) "connected" else "not connected"}")
 
         // Check local participant first
         userRole?.let { role ->
-            Log.d(TAG, "🔍 Local participant role: $role")
+            Log.d(TAG, "🔍 VideoCallActivity: Local participant role: '$role'")
             if (role.lowercase() == "patient") {
-                Log.d(TAG, "✅ Patient found - local participant")
+                Log.d(TAG, "✅ VideoCallActivity: Patient found - LOCAL participant has patient role")
                 return true
             }
+        } ?: run {
+            Log.w(TAG, "⚠️ VideoCallActivity: Local participant role is null")
         }
 
         // Check ALL remote participants using current room state
         val currentRoom = room
         if (currentRoom == null) {
-            Log.w(TAG, "⚠️ No room available for patient check")
+            Log.w(TAG, "⚠️ VideoCallActivity: No room available for patient check - cannot evaluate remote participants")
             return false
         }
 
         val remoteParticipants = currentRoom.remoteParticipants
-        Log.d(TAG, "🔍 Checking ${remoteParticipants.size} remote participants")
+        Log.d(TAG, "🔍 VideoCallActivity: Checking ${remoteParticipants.size} remote participant(s)")
 
-        for (participant in remoteParticipants) {
+        remoteParticipants.forEachIndexed { index, participant ->
+            Log.d(TAG, "🔍 VideoCallActivity: Remote participant[$index] identity: '${participant.identity}'")
             val participantRole = extractRoleFromIdentity(participant.identity)?.lowercase()
-            Log.d(TAG, "🔍 Participant ${participant.identity} role: ${participantRole ?: "unknown"}")
+            Log.d(TAG, "🔍 VideoCallActivity: Remote participant[$index] extracted role: '${participantRole ?: "none"}' from identity '${participant.identity}'")
 
             if (participantRole == "patient") {
-                Log.d(TAG, "✅ Patient found - remote participant: ${participant.identity}")
+                Log.d(TAG, "✅ VideoCallActivity: Patient found - REMOTE participant '${participant.identity}' has patient role")
                 return true
             }
         }
 
-        Log.d(TAG, "❌ No patient found in current room participants")
+        Log.d(TAG, "❌ VideoCallActivity: No patient found among ${remoteParticipants.size} remote participant(s) and local participant")
         return false
     }
 

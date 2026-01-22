@@ -736,36 +736,41 @@ class VideoCallViewController: UIViewController {
     // MARK: - Helper Methods for Popup Management
 
     private func checkIfPatientIsPresent() -> Bool {
-        print("🔍 Checking if patient is present in room (SID: \(room?.sid ?? "nil"))")
+        print("🔍 VideoCallViewController: Checking if patient is present in room (SID: \(room?.sid ?? "nil"))")
+        print("🔍 VideoCallViewController: Current room state: \(room != nil ? "connected" : "not connected")")
 
         // Check local participant first
         if let localRole = userRole?.lowercased() {
-            print("🔍 Local participant role: \(localRole)")
+            print("🔍 VideoCallViewController: Local participant role: '\(localRole)'")
             if localRole == "patient" {
-                print("✅ Patient found - local participant")
+                print("✅ VideoCallViewController: Patient found - LOCAL participant has patient role")
                 return true
             }
+        } else {
+            print("⚠️ VideoCallViewController: Local participant role is nil")
         }
 
         // Check ALL remote participants in current room state
         guard let currentRoom = room else {
-            print("⚠️ No room available for patient check")
+            print("⚠️ VideoCallViewController: No room available for patient check - cannot evaluate remote participants")
             return false
         }
 
-        print("🔍 Checking \(currentRoom.remoteParticipants.count) remote participants")
+        let remoteParticipants = currentRoom.remoteParticipants
+        print("🔍 VideoCallViewController: Checking \(remoteParticipants.count) remote participant(s)")
 
-        for participant in currentRoom.remoteParticipants {
+        for (index, participant) in remoteParticipants.enumerated() {
+            print("🔍 VideoCallViewController: Remote participant[\(index)] identity: '\(participant.identity)'")
             let participantRole = extractRoleFromIdentity(participant.identity)?.lowercased()
-            print("🔍 Participant \(participant.identity) role: \(participantRole ?? "unknown")")
+            print("🔍 VideoCallViewController: Remote participant[\(index)] extracted role: '\(participantRole ?? "none")' from identity '\(participant.identity)'")
 
             if participantRole == "patient" {
-                print("✅ Patient found - remote participant: \(participant.identity)")
+                print("✅ VideoCallViewController: Patient found - REMOTE participant '\(participant.identity)' has patient role")
                 return true
             }
         }
 
-        print("❌ No patient found in current room participants")
+        print("❌ VideoCallViewController: No patient found among \(remoteParticipants.count) remote participant(s) and local participant")
         return false
     }
 
@@ -924,18 +929,38 @@ class VideoCallViewController: UIViewController {
      */
     private func extractRoleFromIdentity(_ identity: String?) -> String? {
         guard let identity = identity, !identity.isEmpty else { return nil }
-        // If identity contains role information in a known format, extract it
-        // This is a placeholder - implement according to your identity format
-        // For example, if identity is "user@MHT" or "user_MHT" extract "MHT"
-        if identity.contains("@MHT") || identity.hasSuffix("_MHT") {
-            return "MHT"
-        } else if identity.contains("@CCT") || identity.hasSuffix("_CCT") {
-            return "CCT"
-        } else if identity.contains("@Patient") || identity.hasSuffix("_Patient") {
-            return "Patient"
-        } else {
-            return nil // Role information not available in identity
+
+        let lowercasedIdentity = identity.lowercased()
+
+        // Check for patient role with multiple possible formats
+        if lowercasedIdentity.contains("patient") ||
+           lowercasedIdentity.contains("@patient") ||
+           lowercasedIdentity.hasSuffix("_patient") ||
+           lowercasedIdentity.hasPrefix("patient_") ||
+           lowercasedIdentity.hasPrefix("patient@") {
+            return "patient"
         }
+
+        // Check for MHT role
+        if lowercasedIdentity.contains("@mht") ||
+           lowercasedIdentity.hasSuffix("_mht") ||
+           lowercasedIdentity.hasPrefix("mht_") ||
+           lowercasedIdentity.hasPrefix("mht@") ||
+           lowercasedIdentity.contains("mht") {
+            return "mht"
+        }
+
+        // Check for CCT role
+        if lowercasedIdentity.contains("@cct") ||
+           lowercasedIdentity.hasSuffix("_cct") ||
+           lowercasedIdentity.hasPrefix("cct_") ||
+           lowercasedIdentity.hasPrefix("cct@") ||
+           lowercasedIdentity.contains("cct") {
+            return "cct"
+        }
+
+        // No recognized role found
+        return nil
     }
 }
 

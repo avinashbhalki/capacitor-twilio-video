@@ -410,16 +410,30 @@ class VideoCallViewController: UIViewController {
             return
         }
 
-        // Ensure no existing room connection
+        // CRITICAL: Prevent joining if already in a room or transitioning
+        if callState == .joining || callState == .connected {
+            print("⚠️ VideoCallViewController: Already joining/connected to room, ignoring connect request")
+            return
+        }
+
+        // Ensure no existing room connection with proper cleanup
         if let existingRoom = room {
             print("⚠️ VideoCallViewController: Existing room detected (state: \(existingRoom.state)), cleaning up first")
             if existingRoom.state == .connected || existingRoom.state == .connecting {
                 existingRoom.disconnect()
+                // Wait for proper disconnection before proceeding
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.connectToRoom()
+                }
+                return
             }
             cleanup()
         }
 
-        print("🔗 VideoCallViewController: Connecting to room: \(name) with identity: \(userIdentity ?? "anonymous")")
+        print("🔗 VideoCallViewController: Connecting to room: \(name) with identity: \(userIdentity ?? "anonymous") (Thread: \(Thread.isMainThread ? "main" : "background"))")
+
+        // Set state BEFORE attempting connection
+        transitionToState(.joining)
 
         let connectOptions = ConnectOptions(token: token) { builder in
             builder.roomName = name
@@ -807,7 +821,7 @@ class VideoCallViewController: UIViewController {
 
     // MARK: - Cleanup
     private func cleanup() {
-        print("Cleaning up resources")
+        print("🧹 VideoCallViewController: Starting resource cleanup (Thread: \(Thread.isMainThread ? "main" : "background"))")
 
         // Restore screen lock behavior
         restoreScreenLock()
@@ -828,23 +842,45 @@ class VideoCallViewController: UIViewController {
             object: nil
         )
 
-        // Clean up local media
-        localVideoTrack?.removeRenderer(localThumbnailView)
-        localVideoTrack = nil
-        localAudioTrack = nil
-        camera?.stopCapture()
-        camera = nil
-        room = nil
-        localParticipant = nil
+        // CRITICAL: Clean up all participant renderers BEFORE releasing room
+        for (identity, renderer) in participantRenderers {
+            print("🗑️ VideoCallViewController: Cleaning up renderer for: \(identity)")
 
-        // Clean up all participant renderers
-        for (_, renderer) in participantRenderers {
-            renderer.videoTrack?.removeRenderer(renderer.videoView)
-            renderer.videoView.removeFromSuperview()
+            // Detach video track from renderer safely
+            if let track = renderer.videoTrack {
+                track.removeRenderer(renderer.videoView)
+            }
+
+            // Remove video view from UI hierarchy on main thread
+            DispatchQueue.main.async {
+                renderer.videoView.removeFromSuperview()
+            }
         }
         participantRenderers.removeAll()
 
-        // Reset state
+        // Clean up local media safely
+        if let localVideo = localVideoTrack {
+            localVideo.removeRenderer(localThumbnailView)
+            print("📹 VideoCallViewController: Local video renderer detached")
+        }
+        localVideoTrack = nil
+        localAudioTrack = nil
+
+        // Stop camera capture safely with completion
+        camera?.stopCapture { error in
+            if let error = error {
+                print("⚠️ VideoCallViewController: Camera stop error: \(error.localizedDescription)")
+            } else {
+                print("📷 VideoCallViewController: Camera stopped successfully")
+            }
+        }
+        camera = nil
+
+        // Clear room and participant references
+        room = nil
+        localParticipant = nil
+
+        // Reset state variables
         dominantSpeakerIdentity = nil
         focusedParticipantIdentity = nil
         userHasSelectedParticipant = false
@@ -1141,10 +1177,10 @@ extension VideoCallViewController {
                 }
                 renderer.videoView.removeFromSuperview()
 
-                // Clean up any remaining tracks
-                renderer.videoView.track = nil
-            }
-
+                // Clean up renderer track reference properly
+                if let track = renderer.videoTrack {
+                    track.removeRenderer(renderer.videoView)
+                }
             // If this was the focused participant, switch focus
             if self.focusedParticipantIdentity == participant.identity {
                 self.selectNewFocusedParticipant()
@@ -1299,34 +1335,43 @@ extension VideoCallViewController {
 
     private func addRemoteVideoTrack(_ participantIdentity: String, track: RemoteVideoTrack) {
         guard var renderer = participantRenderers[participantIdentity] else {
-            print("❌ No renderer found for participant: \(participantIdentity)")
+            print("❌ VideoCallViewController: No renderer found for participant: \(participantIdentity)")
             return
         }
 
-        DispatchQueue.main.async {
-            // Critical: Check if track already attached to prevent duplicate binding
-            if renderer.videoTrack != nil {
-                print("⚠️ Track already attached to participant: \(participantIdentity)")
-                return
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            // CRITICAL: Detach any existing track BEFORE attaching new one
+            if let existingTrack = renderer.videoTrack {
+                print("⚠️ VideoCallViewController: Detaching existing track for \(participantIdentity)")
+                existingTrack.removeRenderer(renderer.videoView)
             }
 
-            // Attach track to the stable video view - ONLY ONCE
+            // Attach new track to the stable video view
             track.addRenderer(renderer.videoView)
-            print("✅ Track attached to renderer for: \(participantIdentity)")
+            print("✅ VideoCallViewController: Track attached to renderer for: \(participantIdentity) (Thread: \(Thread.isMainThread ? "main" : "background"))")
 
             // Update renderer's track reference
             renderer.videoTrack = track
             self.participantRenderers[participantIdentity] = renderer
 
-            // Ensure view is in the correct container
+            // Ensure view is in the correct container with proper cleanup
             if renderer.isFocused {
                 // Should be in primary container
                 if renderer.videoView.superview != self.primaryVideoContainer {
-                    // Critical: Remove from current superview BEFORE adding to new parent
-                    renderer.videoView.removeFromSuperview()
-                    self.primaryVideoContainer.subviews.forEach { $0.removeFromSuperview() }
+                    print("📺 VideoCallViewController: Moving focused video to primary container for \(participantIdentity)")
 
-                    // Apply proper AutoLayout constraints (MANDATORY for TVIVideoView)
+                    // CRITICAL: Clean up primary container first
+                    self.primaryVideoContainer.subviews.forEach { view in
+                        view.removeFromSuperview()
+                    }
+
+                    // Remove from current parent before adding to new one
+                    renderer.videoView.removeFromSuperview()
+
+                    // Apply proper AutoLayout constraints (MANDATORY for VideoView)
+                    self.primaryVideoContainer.addSubview(renderer.videoView)
                     renderer.videoView.translatesAutoresizingMaskIntoConstraints = false
                     self.primaryVideoContainer.addSubview(renderer.videoView)
 
@@ -1362,18 +1407,24 @@ extension VideoCallViewController {
 
     private func removeRemoteVideoTrack(_ participantIdentity: String, track: RemoteVideoTrack) {
         guard var renderer = participantRenderers[participantIdentity] else {
-            print("No renderer found for participant: \(participantIdentity)")
+            print("⚠️ VideoCallViewController: No renderer found for participant: \(participantIdentity)")
             return
         }
 
-        DispatchQueue.main.async {
-            track.removeRenderer(renderer.videoView)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
 
-            // Clear track reference
-            renderer.videoTrack = nil
-            self.participantRenderers[participantIdentity] = renderer
+            // CRITICAL: Only remove renderer if this track is actually attached
+            if renderer.videoTrack === track {
+                track.removeRenderer(renderer.videoView)
+                print("✅ VideoCallViewController: Removed video track from participant: \(participantIdentity) (Thread: \(Thread.isMainThread ? "main" : "background"))")
 
-            print("Removed video track from participant: \(participantIdentity)")
+                // Clear track reference
+                renderer.videoTrack = nil
+                self.participantRenderers[participantIdentity] = renderer
+            } else {
+                print("⚠️ VideoCallViewController: Track mismatch for \(participantIdentity), skipping removal")
+            }
         }
     }
 

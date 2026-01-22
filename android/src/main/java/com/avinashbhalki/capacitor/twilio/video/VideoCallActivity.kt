@@ -480,16 +480,30 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun connectToRoom() {
-        // Ensure no existing room connection
+        // CRITICAL: Prevent joining if already in a room or transitioning
+        if (callState == CallState.JOINING || callState == CallState.CONNECTED) {
+            Log.w(TAG, "⚠️ Already joining/connected to room, ignoring connect request (state: $callState)")
+            return
+        }
+
+        // Ensure no existing room connection with proper cleanup
         room?.let { existingRoom ->
             Log.w(TAG, "⚠️ Existing room detected (state: ${existingRoom.state}), cleaning up first")
             if (existingRoom.state == Room.State.CONNECTED || existingRoom.state == Room.State.CONNECTING) {
                 existingRoom.disconnect()
+                // Wait for proper disconnection before proceeding
+                mainHandler.postDelayed({
+                    connectToRoom()
+                }, 500)
+                return
             }
             cleanup()
         }
 
-        Log.d(TAG, "🔗 Connecting to room: $roomName with identity: ${userIdentity ?: "anonymous"}")
+        Log.d(TAG, "🔗 Connecting to room: $roomName with identity: ${userIdentity ?: "anonymous"} (Thread: ${if (Looper.myLooper() == Looper.getMainLooper()) "main" else "background"})")
+
+        // Set state BEFORE attempting connection
+        callState = CallState.JOINING
 
         val connectOptions = ConnectOptions.Builder(accessToken!!)
             .roomName(roomName)
@@ -721,8 +735,13 @@ class VideoCallActivity : AppCompatActivity() {
                         // Remove from thumbnail grid
                         thumbnailGridContainer.removeView(renderer.videoView)
 
-                        // Clean up any track attachments
-                        renderer.videoView.release()
+                        // Clean up any track attachments safely
+                        try {
+                            renderer.videoView.release()
+                            Log.d(TAG, "🗑️ VideoView released for ${participant.identity}")
+                        } catch (releaseException: Exception) {
+                            Log.w(TAG, "⚠️ Error releasing VideoView for ${participant.identity}", releaseException)
+                        }
                     } catch (viewException: Exception) {
                         Log.w(TAG, "⚠️ Error cleaning up views for ${participant.identity}", viewException)
                     }
@@ -1504,62 +1523,118 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun cleanup() {
-        Log.d(TAG, "Cleaning up resources")
+        Log.d(TAG, "🧹 Starting resource cleanup (Thread: ${if (Looper.myLooper() == Looper.getMainLooper()) "main" else "background"})")
+
+        // Restore screen lock behavior first
+        restoreScreenLock()
+
+        // Dismiss any open dialogs and reset state
+        roleSelectionDialog?.dismiss()
+        userListDialog?.dismiss()
+        roleSelectionDialog = null
+        userListDialog = null
+        pendingRoleKey = null
 
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceRunnable?.let { mainHandler.removeCallbacks(it) }
         dominantSpeakerDebounceRunnable = null
 
-        // Clean up local media
-        localVideoTrack?.let {
-            it.removeSink(localThumbnailView)
-            it.release()
-        }
-        localVideoTrack = null
+        // CRITICAL: Clean up all participant renderers BEFORE releasing room
+        for ((identity, renderer) in participantRenderers) {
+            Log.d(TAG, "🗑️ Cleaning up renderer for: $identity")
 
-        localAudioTrack?.release()
-        localAudioTrack = null
+            // Detach video track from renderer safely
+            renderer.videoTrack?.let { track ->
+                try {
+                    track.removeSink(renderer.videoView)
+                    Log.d(TAG, "📹 Video sink removed for: $identity")
+                } catch (e: Exception) {
+                    Log.w(TAG, "⚠️ Error removing video sink for $identity", e)
+                }
+            }
 
-        cameraCapturer?.stopCapture()
-        cameraCapturer = null
-
-        // Clean up all participant renderers
-        runOnUiThread {
-            participantRenderers.values.forEach { renderer ->
-                renderer.videoTrack?.removeSink(renderer.videoView)
-                primaryVideoContainer.removeView(renderer.videoView)
-                thumbnailGridContainer.removeView(renderer.videoView)
+            // Remove from UI on main thread
+            runOnUiThread {
+                try {
+                    primaryVideoContainer.removeView(renderer.videoView)
+                    thumbnailGridContainer.removeView(renderer.videoView)
+                    renderer.videoView.release()
+                } catch (e: Exception) {
+                    Log.w(TAG, "⚠️ Error cleaning up UI for $identity", e)
+                }
             }
         }
         participantRenderers.clear()
 
-        // Reset state
+        // Clean up local media safely
+        localVideoTrack?.let { track ->
+            try {
+                track.removeSink(localThumbnailView)
+                track.release()
+                Log.d(TAG, "📹 Local video track released")
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Error releasing local video track", e)
+            }
+        }
+        localVideoTrack = null
+
+        localAudioTrack?.let { track ->
+            try {
+                track.release()
+                Log.d(TAG, "🎤 Local audio track released")
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Error releasing local audio track", e)
+            }
+        }
+        localAudioTrack = null
+
+        // Stop camera capture safely
+        cameraCapturer?.let { capturer ->
+            try {
+                capturer.stopCapture()
+                Log.d(TAG, "📷 Camera stopped successfully")
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Camera stop error", e)
+            }
+        }
+        cameraCapturer = null
+
+        // Reset state variables
         dominantSpeakerIdentity = null
         focusedParticipantIdentity = null
         userHasSelectedParticipant = false
 
-        // Clean up audio
+        // Clean up audio safely
         audioManager?.let { am ->
-            if (isBluetoothScoOn) {
-                am.stopBluetoothSco()
-                am.isBluetoothScoOn = false
-                isBluetoothScoOn = false
+            try {
+                if (isBluetoothScoOn) {
+                    am.stopBluetoothSco()
+                    am.isBluetoothScoOn = false
+                    isBluetoothScoOn = false
+                }
+                am.mode = AudioManager.MODE_NORMAL
+                Log.d(TAG, "🔊 Audio manager cleaned up")
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Error cleaning up audio manager", e)
             }
-            am.mode = AudioManager.MODE_NORMAL
         }
 
-        // Unregister Bluetooth receiver
+        // Unregister Bluetooth receiver safely
         bluetoothReceiver?.let {
             try {
                 unregisterReceiver(it)
+                Log.d(TAG, "📶 Bluetooth receiver unregistered")
             } catch (e: Exception) {
-                Log.w(TAG, "Error unregistering Bluetooth receiver: ${e.message}")
+                Log.w(TAG, "⚠️ Error unregistering Bluetooth receiver: ${e.message}")
             }
         }
         bluetoothReceiver = null
 
+        // Clear room and participant references
         room = null
         localParticipant = null
+
+        Log.d(TAG, "✅ Resource cleanup completed")
     }
 
     override fun onDestroy() {

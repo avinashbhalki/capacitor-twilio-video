@@ -527,6 +527,9 @@ class VideoCallActivity : AppCompatActivity() {
             // Transition to CONNECTED state
             transitionToState(CallState.CONNECTED)
 
+            // Prevent screen lock during active call
+            preventScreenLock()
+
             TwilioVideoPlugin.getInstance()?.notifyRoomConnected(room.name)
 
             // Handle existing participants
@@ -1178,17 +1181,35 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun showRoleSelectionDialog() {
+        Log.d(TAG, "📋 Attempting to show role selection dialog")
+
+        // Dynamic role visibility check
+        val hasPatientInCall = checkIfPatientIsPresent()
+        Log.d(TAG, "🔍 Patient in call check: $hasPatientInCall")
+
         // Dismiss any existing dialogs
         roleSelectionDialog?.dismiss()
         userListDialog?.dismiss()
 
-        val options = arrayOf("MHT", "CCT", "Patient", "Participants")
-        val roleKeys = arrayOf("mht", "cct", "patient", "participant")
+        val options = mutableListOf("MHT", "CCT")
+        val roleKeys = mutableListOf("mht", "cct")
+
+        // Only add "Patient" option if no patient is currently in the call
+        if (!hasPatientInCall) {
+            options.add("Patient")
+            roleKeys.add("patient")
+            Log.d(TAG, "✅ Patient option added to role selection")
+        } else {
+            Log.d(TAG, "🚫 Patient option hidden - patient already in call")
+        }
+
+        options.add("Participants")
+        roleKeys.add("participant")
 
         try {
             val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
                 .setTitle("Select Role")
-                .setItems(options) { dialog, which ->
+                .setItems(options.toTypedArray()) { dialog, which ->
                     val selectedRoleKey = roleKeys[which]
                     handleRoleSelection(selectedRoleKey)
                     dialog.dismiss()
@@ -1198,6 +1219,8 @@ class VideoCallActivity : AppCompatActivity() {
                 }
 
             roleSelectionDialog = dialogBuilder.create()
+            roleSelectionDialog?.show()
+            Log.d(TAG, "📋 Role selection dialog presented")
             roleSelectionDialog?.show()
 
         } catch (e: Exception) {
@@ -1334,6 +1357,13 @@ class VideoCallActivity : AppCompatActivity() {
 
     private fun cleanup() {
         Log.d(TAG, "Cleaning up resources")
+
+        // Restore screen lock behavior first
+        restoreScreenLock()
+
+        // Dismiss any open dialogs and reset state
+        dismissExistingPopups()
+        pendingRoleKey = null
 
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceRunnable?.let { mainHandler.removeCallbacks(it) }

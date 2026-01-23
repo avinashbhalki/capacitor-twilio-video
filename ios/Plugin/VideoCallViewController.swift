@@ -541,18 +541,31 @@ class VideoCallViewController: UIViewController {
     }
 
     @objc private func showRoleSelectionDialog() {
+        print("Popup opened: Role selection dialog")
+
         // Dismiss any existing alerts
         roleSelectionAlert?.dismiss(animated: false, completion: nil)
         userListAlert?.dismiss(animated: false, completion: nil)
 
         let alert = UIAlertController(title: "Select Role", message: nil, preferredStyle: .actionSheet)
 
-        let roleOptions = [
+        // Check if any participant in the room has role = "patient" (case-insensitive)
+        let hasPatientInRoom = checkIfPatientInRoom()
+
+        var roleOptions = [
             ("MHT", "mht"),
             ("CCT", "cct"),
             ("Patient", "patient"),
             ("Participants", "participant")
         ]
+
+        // Remove Patient option if a patient is already in the room
+        if hasPatientInRoom {
+            roleOptions = roleOptions.filter { $0.1 != "patient" }
+            print("Patient option hidden: Patient already in room")
+        } else {
+            print("Patient option visible: No patient in room")
+        }
 
         for (title, roleKey) in roleOptions {
             let action = UIAlertAction(title: title, style: .default) { _ in
@@ -703,6 +716,12 @@ class VideoCallViewController: UIViewController {
     private func cleanup() {
         print("Cleaning up resources")
 
+        // Restore default screen behavior
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = false
+            print("Screen lock enabled: Cleanup completed")
+        }
+
         // Dismiss any open dialogs
         roleSelectionAlert?.dismiss(animated: false, completion: nil)
         userListAlert?.dismiss(animated: false, completion: nil)
@@ -794,6 +813,17 @@ class VideoCallViewController: UIViewController {
         print("Call state transition: \(oldState) -> \(newState)")
         callState = newState
 
+        // Manage screen lock based on call state
+        DispatchQueue.main.async {
+            if newState == .connected {
+                UIApplication.shared.isIdleTimerDisabled = true
+                print("Screen lock disabled: Call connected")
+            } else if newState == .disconnected || newState == .disconnecting {
+                UIApplication.shared.isIdleTimerDisabled = false
+                print("Screen lock enabled: Call ended")
+            }
+        }
+
         // Update UI based on new state
         DispatchQueue.main.async {
             self.updateButtonStates()
@@ -844,6 +874,27 @@ class VideoCallViewController: UIViewController {
             return "patient"
         } else {
             return nil // Role information not available in identity
+        }
+    }
+
+    /**
+     * Check if any participant in the room has role = "patient" (case-insensitive)
+     * Uses live Twilio Room state from room.remoteParticipants
+     */
+    private func checkIfPatientInRoom() -> Bool {
+        guard let room = room else {
+            print("Roles detected in room: No room available")
+            return false
+        }
+
+        let participantRoles = room.remoteParticipants.compactMap { participant in
+            extractRoleFromIdentity(participant.identity)
+        }
+
+        print("Roles detected in room: \(participantRoles)")
+
+        return participantRoles.contains { role in
+            role.lowercased() == "patient"
         }
     }
 }

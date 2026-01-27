@@ -519,6 +519,28 @@ class VideoCallActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Check if any participant in the room has role = "patient" (case-insensitive)
+     * Uses live Twilio Room state from room.remoteParticipants
+     */
+    private fun checkIfPatientInRoom(): Boolean {
+        val currentRoom = room
+        if (currentRoom == null) {
+            Log.d(TAG, "Roles detected in room: No room available")
+            return false
+        }
+
+        val participantRoles = currentRoom.remoteParticipants.mapNotNull { participant ->
+            extractRoleFromIdentity(participant.identity)
+        }
+
+        Log.d(TAG, "Roles detected in room: $participantRoles")
+
+        return participantRoles.any { role ->
+            role.equals("patient", ignoreCase = true)
+        }
+    }
+
     private val roomListener = object : Room.Listener {
         override fun onConnected(room: Room) {
             Log.d(TAG, "Connected to room: ${room.name}")
@@ -1046,6 +1068,23 @@ class VideoCallActivity : AppCompatActivity() {
         Log.d(TAG, "Call state transition: $oldState -> $newState")
         callState = newState
 
+        // Manage screen lock based on call state
+        runOnUiThread {
+            when (newState) {
+                CallState.CONNECTED -> {
+                    window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    Log.d(TAG, "Screen lock disabled: Call connected")
+                }
+                CallState.DISCONNECTED, CallState.DISCONNECTING -> {
+                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    Log.d(TAG, "Screen lock enabled: Call ended")
+                }
+                else -> {
+                    // No screen lock changes for IDLE or JOINING states
+                }
+            }
+        }
+
         // Update UI based on new state
         runOnUiThread {
             updateButtonStates()
@@ -1178,12 +1217,30 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun showRoleSelectionDialog() {
+        Log.d(TAG, "Popup opened: Role selection dialog")
+
         // Dismiss any existing dialogs
         roleSelectionDialog?.dismiss()
         userListDialog?.dismiss()
 
-        val options = arrayOf("MHT", "CCT", "Patient", "Participants")
-        val roleKeys = arrayOf("mht", "cct", "patient", "participant")
+        // Check if any participant in the room has role = "patient" (case-insensitive)
+        val hasPatientInRoom = checkIfPatientInRoom()
+
+        val allOptions = arrayOf("MHT", "CCT", "Patient", "Participants")
+        val allRoleKeys = arrayOf("mht", "cct", "patient", "participant")
+
+        val (options, roleKeys) = if (hasPatientInRoom) {
+            Log.d(TAG, "Patient option hidden: Patient already in room")
+            val filteredIndices = allOptions.mapIndexedNotNull { index, option ->
+                if (option != "Patient") index else null
+            }
+            val filteredOptions = filteredIndices.map { allOptions[it] }.toTypedArray()
+            val filteredRoleKeys = filteredIndices.map { allRoleKeys[it] }.toTypedArray()
+            Pair(filteredOptions, filteredRoleKeys)
+        } else {
+            Log.d(TAG, "Patient option visible: No patient in room")
+            Pair(allOptions, allRoleKeys)
+        }
 
         try {
             val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
@@ -1211,7 +1268,8 @@ class VideoCallActivity : AppCompatActivity() {
         // Get second participant role and identity (first remote participant)
         var secondParticipantRole: String? = null
         var secondParticipantIdentity: String? = null
-        if (remoteParticipants.isNotEmpty()) {
+        val remoteParticipants = room?.remoteParticipants
+        if (remoteParticipants?.isNotEmpty() == true) {
             val firstRemoteParticipant = remoteParticipants.first()
             secondParticipantIdentity = firstRemoteParticipant.identity
             // Get role from participant's identity if it contains role information
@@ -1334,6 +1392,12 @@ class VideoCallActivity : AppCompatActivity() {
 
     private fun cleanup() {
         Log.d(TAG, "Cleaning up resources")
+
+        // Restore default screen behavior
+        runOnUiThread {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            Log.d(TAG, "Screen lock enabled: Cleanup completed")
+        }
 
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceRunnable?.let { mainHandler.removeCallbacks(it) }

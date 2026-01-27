@@ -157,6 +157,45 @@ public class TwilioVideoPlugin: CAPPlugin {
         call.resolve()
     }
 
+    @objc func sendFormList(_ call: CAPPluginCall) {
+        print("TwilioVideoPlugin: sendFormList method invoked")
+
+        let formsArray = call.getArray("forms") as? [[String: Any]] ?? []
+        var validatedForms: [[String: Any]] = []
+
+        print("TwilioVideoPlugin: sendFormList parsing \(formsArray.count) forms")
+
+        // Validate and parse only required fields, ignore optional ones safely
+        for (index, formDict) in formsArray.enumerated() {
+            guard let id = formDict["id"] as? Int,
+                  let tenantId = formDict["tenant_id"] as? Int,
+                  let name = formDict["name"] as? String, !name.isEmpty,
+                  let links = formDict["links"] as? String, !links.isEmpty else {
+                print("TwilioVideoPlugin: sendFormList skipping invalid form at index \(index)")
+                continue
+            }
+
+            // Create validated form with only required fields
+            let validatedForm: [String: Any] = [
+                "id": id,
+                "tenant_id": tenantId,
+                "name": name,
+                "links": links
+            ]
+
+            validatedForms.append(validatedForm)
+            print("TwilioVideoPlugin: sendFormList parsed form: \(name) (id=\(id))")
+        }
+
+        print("TwilioVideoPlugin: sendFormList calling handleFormsList with \(validatedForms.count) validated forms")
+
+        DispatchQueue.main.async {
+            self.videoViewController?.handleFormsList(forms: validatedForms)
+        }
+
+        call.resolve()
+    }
+
     // Event notification methods
     public func notifyRoomConnected(roomName: String) {
         notifyListeners("roomConnected", data: ["roomName": roomName])
@@ -290,5 +329,30 @@ public class TwilioVideoPlugin: CAPPlugin {
             "message": message,
             "popupType": popupType
         ])
+    }
+
+    public func notifySplitScreenRequested() {
+        notifyListeners("splitScreenRequested", data: [
+            "timestamp": Date().timeIntervalSince1970 * 1000
+        ])
+    }
+
+    public func notifyFormSelected(form: [String: Any]) {
+        var data: [String: Any] = [:]
+
+        if let id = form["id"] as? Int {
+            data["id"] = id
+        }
+        if let name = form["name"] as? String {
+            data["name"] = name
+        }
+        if let links = form["links"] as? String {
+            data["links"] = links
+        }
+        if let tenantId = form["tenant_id"] as? Int {
+            data["tenant_id"] = tenantId
+        }
+
+        notifyListeners("formSelected", data: data)
     }
 }

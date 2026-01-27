@@ -157,6 +157,19 @@ public class TwilioVideoPlugin: CAPPlugin {
         call.resolve()
     }
 
+    @objc func sendFormsList(_ call: CAPPluginCall) {
+        print("TwilioVideoPlugin: sendFormsList method invoked")
+
+        let formsArray = call.getArray("forms") as? [[String: Any]] ?? []
+        print("TwilioVideoPlugin: sendFormsList parsing \(formsArray.count) forms")
+
+        DispatchQueue.main.async {
+            self.videoViewController?.handleFormsList(forms: formsArray)
+        }
+
+        call.resolve()
+    }
+
     // Event notification methods
     public func notifyRoomConnected(roomName: String) {
         notifyListeners("roomConnected", data: ["roomName": roomName])
@@ -290,5 +303,30 @@ public class TwilioVideoPlugin: CAPPlugin {
             "message": message,
             "popupType": popupType
         ])
+    }
+
+    public func notifySplitScreenRequested() {
+        notifyListeners("splitScreenRequested", data: [
+            "timestamp": Date().timeIntervalSince1970 * 1000
+        ])
+    }
+
+    public func notifyFormSelected(form: [String: Any]) {
+        var data: [String: Any] = [:]
+
+        if let id = form["id"] as? Int {
+            data["id"] = id
+        }
+        if let name = form["name"] as? String {
+            data["name"] = name
+        }
+        if let links = form["links"] as? String {
+            data["links"] = links
+        }
+        if let tenantId = form["tenant_id"] as? Int {
+            data["tenant_id"] = tenantId
+        }
+
+        notifyListeners("formSelected", data: data)
     }
 }

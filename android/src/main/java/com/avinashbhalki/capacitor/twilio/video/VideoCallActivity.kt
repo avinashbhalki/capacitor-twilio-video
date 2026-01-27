@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Color
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -17,10 +18,14 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.constraintlayout.widget.ConstraintLayout
+import androidx.constraintlayout.widget.ConstraintSet
 import com.twilio.video.*
 import tvi.webrtc.VideoSink
 
@@ -72,6 +77,7 @@ class VideoCallActivity : AppCompatActivity() {
     private lateinit var speakerButton: ImageButton
     private lateinit var hangupButton: ImageButton
     private lateinit var roleActionButton: ImageButton // Top-left action button
+    private lateinit var splitScreenButton: ImageButton // Split screen button
 
     // Twilio Video
     private var room: Room? = null
@@ -97,6 +103,13 @@ class VideoCallActivity : AppCompatActivity() {
     private var pendingRoleKey: String? = null
     private var roleSelectionDialog: androidx.appcompat.app.AlertDialog? = null
     private var userListDialog: androidx.appcompat.app.AlertDialog? = null
+
+    // Split screen management
+    private var isSplitScreenOpen = false
+    private var formSelectionDialog: AlertDialog? = null
+    private var splitScreenContainer: ConstraintLayout? = null
+    private var webView: WebView? = null
+    private var pendingForms: List<Map<String, Any>> = emptyList()
 
     // Extended properties for new functionality
     private var userIdentity: String? = null
@@ -195,6 +208,23 @@ class VideoCallActivity : AppCompatActivity() {
             setOnClickListener { showRoleSelectionDialog() }
         }
         rootLayout.addView(roleActionButton)
+
+        // Split screen button (below roleActionButton, only visible on tablets for mht/cct)
+        splitScreenButton = ImageButton(this).apply {
+            layoutParams = FrameLayout.LayoutParams(actionButtonSize, actionButtonSize).apply {
+                gravity = Gravity.TOP or Gravity.START
+                setMargins(actionButtonMargin, actionButtonMargin * 3 + actionButtonSize + actionButtonMargin, 0, 0)
+            }
+            setImageResource(android.R.drawable.ic_menu_crop) // Will be changed to split_screen icon
+            backgroundTintList = ColorStateList.valueOf(Color.parseColor("#88000000"))
+            imageTintList = ColorStateList.valueOf(Color.WHITE)
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Split Screen"
+            visibility = View.GONE // Initially hidden, will be shown based on conditions
+            setOnClickListener { handleSplitScreenButtonTap() }
+        }
+        rootLayout.addView(splitScreenButton)
 
         // Local video thumbnail (always at top of grid)
         localThumbnailView = VideoView(this).apply {
@@ -561,6 +591,7 @@ class VideoCallActivity : AppCompatActivity() {
 
             // Initialize action button visibility
             updateActionButtonVisibility()
+            updateSplitScreenButtonVisibility()
         }
 
         override fun onReconnecting(room: Room, twilioException: TwilioException) {
@@ -657,6 +688,7 @@ class VideoCallActivity : AppCompatActivity() {
 
         // Update action button visibility
         updateActionButtonVisibility()
+        updateSplitScreenButtonVisibility()
 
         // Subscribe to existing published video tracks
         participant.remoteVideoTracks.forEach { publication ->
@@ -681,6 +713,7 @@ class VideoCallActivity : AppCompatActivity() {
 
         // Update action button visibility
         updateActionButtonVisibility()
+        updateSplitScreenButtonVisibility()
 
         // Unsubscribe from video tracks
         participant.remoteVideoTracks.forEach { publication ->
@@ -1207,12 +1240,216 @@ class VideoCallActivity : AppCompatActivity() {
 
     // ===== Role Selection and User List Management =====
 
+    private fun isTablet(): Boolean {
+        val configuration = resources.configuration
+        return ((configuration.screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK) >= Configuration.SCREENLAYOUT_SIZE_LARGE)
+    }
+
     private fun updateActionButtonVisibility() {
         val shouldShow = remoteParticipantCount < 2 &&
                         (userRole == "mht" || userRole == "cct")
 
         runOnUiThread {
             roleActionButton.visibility = if (shouldShow) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun updateSplitScreenButtonVisibility() {
+        val shouldShow = isTablet() && (userRole == "mht" || userRole == "cct")
+
+        runOnUiThread {
+            splitScreenButton.visibility = if (shouldShow) View.VISIBLE else View.GONE
+            if (shouldShow) {
+                Log.d(TAG, "Split screen button shown (device: tablet, role: ${userRole ?: "unknown"})")
+            } else {
+                Log.d(TAG, "Split screen button hidden (device: ${if (isTablet()) "tablet" else "phone"}, role: ${userRole ?: "unknown"})")
+            }
+        }
+    }
+
+    // ===== Split Screen Management =====
+
+    private fun handleSplitScreenButtonTap() {
+        Log.d(TAG, "Split screen button tapped")
+
+        if (isSplitScreenOpen) {
+            // Close split screen
+            closeSplitScreen()
+        } else {
+            // Request forms from Ionic
+            requestSplitScreen()
+        }
+    }
+
+    private fun requestSplitScreen() {
+        Log.d(TAG, "Requesting split screen from Ionic")
+        TwilioVideoPlugin.getInstance()?.notifySplitScreenRequested()
+    }
+
+    fun handleFormsList(forms: List<Map<String, Any>>) {
+        Log.d(TAG, "Received forms list with ${forms.size} forms")
+        pendingForms = forms
+
+        runOnUiThread {
+            showFormsSelectionDialog()
+        }
+    }
+
+    private fun showFormsSelectionDialog() {
+        Log.d(TAG, "Showing forms selection dialog")
+
+        // Dismiss any existing dialogs
+        formSelectionDialog?.dismiss()
+
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("Select Form")
+
+        if (pendingForms.isEmpty()) {
+            builder.setMessage("No forms available")
+            builder.setPositiveButton("OK", null)
+        } else {
+            val formNames = pendingForms.map { it["name"] as? String ?: "Unknown" }.toTypedArray()
+
+            builder.setItems(formNames) { _, which ->
+                if (which < pendingForms.size) {
+                    openSplitScreen(pendingForms[which])
+                }
+            }
+        }
+
+        builder.setNegativeButton("Cancel", null)
+
+        formSelectionDialog = builder.create()
+        formSelectionDialog?.show()
+    }
+
+    private fun openSplitScreen(form: Map<String, Any>) {
+        Log.d(TAG, "Opening split screen with form: ${form["name"] ?: "Unknown"}")
+
+        val links = form["links"] as? String
+        if (links.isNullOrBlank()) {
+            Log.e(TAG, "Invalid form URL")
+            return
+        }
+
+        // Fire form selected event
+        TwilioVideoPlugin.getInstance()?.notifyFormSelected(form)
+
+        // Create split screen layout
+        createSplitScreenLayout()
+
+        // Load URL in WebView
+        webView?.loadUrl(links)
+
+        // Update button state
+        isSplitScreenOpen = true
+        updateSplitScreenButtonIcon()
+    }
+
+    private fun createSplitScreenLayout() {
+        Log.d(TAG, "Creating split screen layout")
+
+        // Get the root layout
+        val rootLayout = findViewById<FrameLayout>(android.R.id.content)
+        val contentView = rootLayout.getChildAt(0)
+
+        // Create split screen container
+        splitScreenContainer = ConstraintLayout(this)
+        splitScreenContainer!!.layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
+        splitScreenContainer!!.setBackgroundColor(Color.BLACK)
+
+        // Create WebView
+        webView = WebView(this)
+        webView!!.id = View.generateViewId()
+        webView!!.settings.javaScriptEnabled = true
+        webView!!.setBackgroundColor(Color.WHITE)
+
+        // Add views to split screen container
+        splitScreenContainer!!.addView(primaryVideoContainer)
+        splitScreenContainer!!.addView(webView)
+
+        // Set up constraints for 50/50 split
+        val constraintSet = ConstraintSet()
+        constraintSet.clone(splitScreenContainer)
+
+        // Video container - left half
+        constraintSet.connect(primaryVideoContainer.id, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
+        constraintSet.connect(primaryVideoContainer.id, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+        constraintSet.connect(primaryVideoContainer.id, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+        constraintSet.constrainPercentWidth(primaryVideoContainer.id, 0.5f)
+
+        // WebView - right half
+        constraintSet.connect(webView!!.id, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+        constraintSet.connect(webView!!.id, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+        constraintSet.connect(webView!!.id, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+        constraintSet.constrainPercentWidth(webView!!.id, 0.5f)
+
+        constraintSet.applyTo(splitScreenContainer)
+
+        // Replace content view with split screen container
+        rootLayout.removeView(contentView)
+        rootLayout.addView(splitScreenContainer)
+
+        // Add back the UI controls
+        splitScreenContainer!!.addView(thumbnailGridContainer)
+        splitScreenContainer!!.addView(controlsContainer)
+        splitScreenContainer!!.addView(roleActionButton)
+        splitScreenContainer!!.addView(splitScreenButton)
+    }
+
+    private fun closeSplitScreen() {
+        Log.d(TAG, "Closing split screen")
+
+        // Get the root layout
+        val rootLayout = findViewById<FrameLayout>(android.R.id.content)
+
+        // Remove split screen container
+        if (splitScreenContainer != null) {
+            rootLayout.removeView(splitScreenContainer)
+
+            // Create new single screen layout
+            val newRootLayout = FrameLayout(this)
+            newRootLayout.layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            newRootLayout.setBackgroundColor(Color.BLACK)
+
+            // Restore video container to full screen
+            primaryVideoContainer.layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+
+            // Add all views back to single screen
+            newRootLayout.addView(primaryVideoContainer)
+            newRootLayout.addView(thumbnailGridContainer)
+            newRootLayout.addView(controlsContainer)
+            newRootLayout.addView(roleActionButton)
+            newRootLayout.addView(splitScreenButton)
+
+            rootLayout.addView(newRootLayout)
+
+            // Clean up
+            splitScreenContainer = null
+            webView = null
+        }
+
+        // Update button state
+        isSplitScreenOpen = false
+        updateSplitScreenButtonIcon()
+    }
+
+    private fun updateSplitScreenButtonIcon() {
+        runOnUiThread {
+            if (isSplitScreenOpen) {
+                splitScreenButton.setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
+            } else {
+                splitScreenButton.setImageResource(android.R.drawable.ic_menu_crop)
+            }
         }
     }
 
@@ -1461,11 +1698,20 @@ class VideoCallActivity : AppCompatActivity() {
         // Dismiss any open dialogs
         roleSelectionDialog?.dismiss()
         userListDialog?.dismiss()
+        formSelectionDialog?.dismiss()
 
         // Clear references
         roleSelectionDialog = null
         userListDialog = null
+        formSelectionDialog = null
         pendingRoleKey = null
+
+        // Clean up split screen
+        if (isSplitScreenOpen) {
+            splitScreenContainer = null
+            webView = null
+            isSplitScreenOpen = false
+        }
 
         cleanup()
         instance = null

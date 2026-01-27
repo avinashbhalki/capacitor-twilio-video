@@ -2,6 +2,8 @@ package com.avinashbhalki.capacitor.twilio.video
 
 import android.Manifest
 import android.content.Intent
+import android.util.Log
+import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -154,6 +156,40 @@ class TwilioVideoPlugin : Plugin() {
         call.resolve()
     }
 
+    @PluginMethod
+    fun sendFormsList(call: PluginCall) {
+        Log.d("TwilioVideoPlugin", "sendFormsList method invoked")
+
+        val formsArray = call.getArray("forms")
+        val forms = mutableListOf<Map<String, Any>>()
+
+        if (formsArray != null) {
+            Log.d("TwilioVideoPlugin", "sendFormsList parsing ${formsArray.length()} forms")
+            for (i in 0 until formsArray.length()) {
+                try {
+                    val formObj = formsArray.getJSONObject(i)
+                    val formMap = mutableMapOf<String, Any>()
+
+                    formObj.keys().forEach { key ->
+                        val value = formObj.get(key)
+                        formMap[key] = value
+                    }
+
+                    forms.add(formMap)
+                    Log.d("TwilioVideoPlugin", "sendFormsList parsed form: ${formObj.optString("name", "Unknown")}")
+                } catch (e: Exception) {
+                    Log.e("TwilioVideoPlugin", "sendFormsList error parsing form at index $i: ${e.message}")
+                }
+            }
+        } else {
+            Log.d("TwilioVideoPlugin", "sendFormsList received null forms array")
+        }
+
+        Log.i("TwilioVideoPlugin", "sendFormsList calling handleFormsList with ${forms.size} forms")
+        VideoCallActivity.getInstance()?.handleFormsList(forms)
+        call.resolve()
+    }
+
     fun notifyRoomConnected(roomName: String) {
         val data = JSObject()
         data.put("roomName", roomName)
@@ -284,5 +320,22 @@ class TwilioVideoPlugin : Plugin() {
         data.put("message", message)
         data.put("popupType", popupType)
         notifyListeners("popupError", data)
+    }
+
+    fun notifySplitScreenRequested() {
+        val data = JSObject()
+        data.put("timestamp", System.currentTimeMillis())
+        notifyListeners("splitScreenRequested", data)
+    }
+
+    fun notifyFormSelected(form: Map<String, Any>) {
+        val data = JSObject()
+
+        form["id"]?.let { data.put("id", it) }
+        form["name"]?.let { data.put("name", it) }
+        form["links"]?.let { data.put("links", it) }
+        form["tenant_id"]?.let { data.put("tenant_id", it) }
+
+        notifyListeners("formSelected", data)
     }
 }

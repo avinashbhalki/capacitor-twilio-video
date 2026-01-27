@@ -1,6 +1,7 @@
 import UIKit
 import TwilioVideo
 import AVFoundation
+import WebKit
 
 class VideoCallViewController: UIViewController {
 
@@ -52,6 +53,7 @@ class VideoCallViewController: UIViewController {
     private var localThumbnailView: VideoView!
     private var controlsContainer: UIView!
     private var roleActionButton: UIButton! // Top-left action button
+    private var splitScreenButton: UIButton! // Split screen button
     private var muteButton: UIButton!
     private var videoButton: UIButton!
     private var flipButton: UIButton!
@@ -68,6 +70,13 @@ class VideoCallViewController: UIViewController {
     private var pendingRoleKey: String?
     private var roleSelectionAlert: UIAlertController?
     private var userListAlert: UIAlertController?
+
+    // Split screen management
+    private var isSplitScreenOpen = false
+    private var formSelectionAlert: UIAlertController?
+    private var splitScreenContainer: UIView?
+    private var webView: WKWebView?
+    private var pendingForms: [[String: Any]] = []
 
     // Participant Rendering Manager
     private var participantRenderers: [String: ParticipantRenderer] = [:]
@@ -132,6 +141,25 @@ class VideoCallViewController: UIViewController {
             roleActionButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             roleActionButton.widthAnchor.constraint(equalToConstant: 48),
             roleActionButton.heightAnchor.constraint(equalToConstant: 48)
+        ])
+
+        // Split screen button (below roleActionButton, only visible on tablets for mht/cct)
+        splitScreenButton = UIButton(type: .system)
+        splitScreenButton.setImage(UIImage(systemName: "square.split.2x1"), for: .normal)
+        splitScreenButton.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        splitScreenButton.tintColor = .white
+        splitScreenButton.layer.cornerRadius = 24
+        splitScreenButton.clipsToBounds = true
+        splitScreenButton.isHidden = true // Initially hidden, will be shown based on conditions
+        splitScreenButton.translatesAutoresizingMaskIntoConstraints = false
+        splitScreenButton.addTarget(self, action: #selector(handleSplitScreenButtonTap), for: .touchUpInside)
+        view.addSubview(splitScreenButton)
+
+        NSLayoutConstraint.activate([
+            splitScreenButton.topAnchor.constraint(equalTo: roleActionButton.bottomAnchor, constant: 16),
+            splitScreenButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            splitScreenButton.widthAnchor.constraint(equalToConstant: 48),
+            splitScreenButton.heightAnchor.constraint(equalToConstant: 48)
         ])
 
         // Local video thumbnail (always at top of grid)
@@ -531,12 +559,191 @@ class VideoCallViewController: UIViewController {
 
     // MARK: - Role Selection and User List Management
 
+    private func isTablet() -> Bool {
+        return UIDevice.current.userInterfaceIdiom == .pad
+    }
+
     private func updateActionButtonVisibility() {
         let shouldShow = remoteParticipantCount < 2 &&
                         (userRole == "mht" || userRole == "cct")
 
         DispatchQueue.main.async {
             self.roleActionButton.isHidden = !shouldShow
+        }
+    }
+
+    private func updateSplitScreenButtonVisibility() {
+        let shouldShow = isTablet() && (userRole == "mht" || userRole == "cct")
+
+        DispatchQueue.main.async {
+            self.splitScreenButton.isHidden = !shouldShow
+            if shouldShow {
+                print("Split screen button shown (device: iPad, role: \(self.userRole ?? "unknown"))")
+            } else {
+                print("Split screen button hidden (device: \(self.isTablet() ? "iPad" : "iPhone"), role: \(self.userRole ?? "unknown"))")
+            }
+        }
+    }
+
+    // MARK: - Split Screen Management
+
+    @objc private func handleSplitScreenButtonTap() {
+        print("Split screen button tapped")
+
+        if isSplitScreenOpen {
+            // Close split screen
+            closeSplitScreen()
+        } else {
+            // Request forms from Ionic
+            requestSplitScreen()
+        }
+    }
+
+    private func requestSplitScreen() {
+        print("Requesting split screen from Ionic")
+        TwilioVideoPlugin.getInstance()?.notifySplitScreenRequested()
+    }
+
+    func handleFormsList(forms: [[String: Any]]) {
+        print("Received forms list with \(forms.count) forms")
+        pendingForms = forms
+
+        DispatchQueue.main.async {
+            self.showFormsSelectionDialog()
+        }
+    }
+
+    private func showFormsSelectionDialog() {
+        print("Showing forms selection dialog")
+
+        // Dismiss any existing alerts
+        formSelectionAlert?.dismiss(animated: false, completion: nil)
+
+        let alert = UIAlertController(title: "Select Form", message: nil, preferredStyle: .actionSheet)
+
+        if pendingForms.isEmpty {
+            let noFormsAction = UIAlertAction(title: "No forms available", style: .default, handler: nil)
+            noFormsAction.isEnabled = false
+            alert.addAction(noFormsAction)
+        } else {
+            for form in pendingForms {
+                if let name = form["name"] as? String {
+                    let action = UIAlertAction(title: name, style: .default) { _ in
+                        self.openSplitScreen(with: form)
+                    }
+                    alert.addAction(action)
+                }
+            }
+        }
+
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
+        alert.addAction(cancelAction)
+
+        // For iPad support
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = splitScreenButton
+            popover.sourceRect = splitScreenButton.bounds
+        }
+
+        formSelectionAlert = alert
+        present(alert, animated: true)
+    }
+
+    private func openSplitScreen(with form: [String: Any]) {
+        print("Opening split screen with form: \(form["name"] ?? "Unknown")")
+
+        guard let links = form["links"] as? String,
+              let url = URL(string: links) else {
+            print("Invalid form URL")
+            return
+        }
+
+        // Fire form selected event
+        TwilioVideoPlugin.getInstance()?.notifyFormSelected(form: form)
+
+        // Create split screen layout
+        createSplitScreenLayout()
+
+        // Load URL in WebView
+        webView?.load(URLRequest(url: url))
+
+        // Update button state
+        isSplitScreenOpen = true
+        updateSplitScreenButtonIcon()
+    }
+
+    private func createSplitScreenLayout() {
+        print("Creating split screen layout")
+
+        // Create main container
+        splitScreenContainer = UIView()
+        splitScreenContainer!.backgroundColor = .black
+        splitScreenContainer!.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(splitScreenContainer!)
+
+        // Create WebView
+        webView = WKWebView()
+        webView!.backgroundColor = .white
+        webView!.translatesAutoresizingMaskIntoConstraints = false
+        splitScreenContainer!.addSubview(webView!)
+
+        // Layout constraints for split screen (50/50 split on iPad)
+        NSLayoutConstraint.activate([
+            // Split screen container takes full screen
+            splitScreenContainer!.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            splitScreenContainer!.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            splitScreenContainer!.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            splitScreenContainer!.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+
+            // WebView takes right half
+            webView!.trailingAnchor.constraint(equalTo: splitScreenContainer!.trailingAnchor),
+            webView!.topAnchor.constraint(equalTo: splitScreenContainer!.topAnchor),
+            webView!.bottomAnchor.constraint(equalTo: splitScreenContainer!.bottomAnchor),
+            webView!.widthAnchor.constraint(equalTo: splitScreenContainer!.widthAnchor, multiplier: 0.5),
+
+            // Resize video container to take left half
+            primaryVideoContainer.leadingAnchor.constraint(equalTo: splitScreenContainer!.leadingAnchor),
+            primaryVideoContainer.topAnchor.constraint(equalTo: splitScreenContainer!.topAnchor),
+            primaryVideoContainer.bottomAnchor.constraint(equalTo: splitScreenContainer!.bottomAnchor),
+            primaryVideoContainer.widthAnchor.constraint(equalTo: splitScreenContainer!.widthAnchor, multiplier: 0.5)
+        ])
+
+        // Bring controls to front
+        view.bringSubviewToFront(controlsContainer)
+        view.bringSubviewToFront(thumbnailGridContainer)
+        view.bringSubviewToFront(roleActionButton)
+        view.bringSubviewToFront(splitScreenButton)
+    }
+
+    private func closeSplitScreen() {
+        print("Closing split screen")
+
+        // Remove split screen container
+        splitScreenContainer?.removeFromSuperview()
+        splitScreenContainer = nil
+        webView = nil
+
+        // Restore video container to full screen
+        primaryVideoContainer.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            primaryVideoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            primaryVideoContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            primaryVideoContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            primaryVideoContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        // Update button state
+        isSplitScreenOpen = false
+        updateSplitScreenButtonIcon()
+    }
+
+    private func updateSplitScreenButtonIcon() {
+        DispatchQueue.main.async {
+            if self.isSplitScreenOpen {
+                self.splitScreenButton.setImage(UIImage(systemName: "xmark"), for: .normal)
+            } else {
+                self.splitScreenButton.setImage(UIImage(systemName: "square.split.2x1"), for: .normal)
+            }
         }
     }
 
@@ -725,11 +932,21 @@ class VideoCallViewController: UIViewController {
         // Dismiss any open dialogs
         roleSelectionAlert?.dismiss(animated: false, completion: nil)
         userListAlert?.dismiss(animated: false, completion: nil)
+        formSelectionAlert?.dismiss(animated: false, completion: nil)
 
         // Clear references
         roleSelectionAlert = nil
         userListAlert = nil
+        formSelectionAlert = nil
         pendingRoleKey = nil
+
+        // Clean up split screen
+        if isSplitScreenOpen {
+            splitScreenContainer?.removeFromSuperview()
+            splitScreenContainer = nil
+            webView = nil
+            isSplitScreenOpen = false
+        }
 
         // Cancel any pending dominant speaker updates
         dominantSpeakerDebounceTimer?.invalidate()
@@ -920,6 +1137,7 @@ extension VideoCallViewController: RoomDelegate {
 
         // Initialize action button visibility
         updateActionButtonVisibility()
+        updateSplitScreenButtonVisibility()
     }
 
     func roomDidFailToConnect(room: Room, error: Error) {
@@ -1003,6 +1221,7 @@ extension VideoCallViewController {
 
         // Update action button visibility
         updateActionButtonVisibility()
+        updateSplitScreenButtonVisibility()
 
         // Subscribe to existing published video tracks
         for publication in participant.remoteVideoTracks {
@@ -1025,6 +1244,7 @@ extension VideoCallViewController {
 
         // Update action button visibility
         updateActionButtonVisibility()
+        updateSplitScreenButtonVisibility()
 
         // Unsubscribe from video tracks
         for publication in participant.remoteVideoTracks {

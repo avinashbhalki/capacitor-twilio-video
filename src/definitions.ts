@@ -66,6 +66,51 @@ export interface User {
 }
 
 /**
+ * Form object structure for sendFormsList
+ */
+export interface Form {
+  /**
+   * Unique identifier
+   */
+  id: number;
+
+  /**
+   * Tenant identifier
+   */
+  tenant_id: number;
+
+  /**
+   * Form name (displayed in popup)
+   */
+  name: string;
+
+  /**
+   * Form URL to load in WebView
+   */
+  links: string;
+
+  /**
+   * Practitioner ID
+   */
+  practitioner: number;
+
+  /**
+   * Responder ID
+   */
+  responder: number;
+
+  /**
+   * Created timestamp
+   */
+  createdAt: string;
+
+  /**
+   * Updated timestamp
+   */
+  updatedAt: string;
+}
+
+/**
  * Options for sending users list back to plugin
  */
 export interface SendUsersListOptions {
@@ -78,6 +123,16 @@ export interface SendUsersListOptions {
    * Array of users to display in the second popup
    */
   users: User[];
+}
+
+/**
+ * Options for sending forms list back to plugin
+ */
+export interface SendFormsListOptions {
+  /**
+   * Array of forms to display in the popup
+   */
+  forms: Form[];
 }
 
 /**
@@ -391,6 +446,41 @@ export interface PopupErrorEvent {
 }
 
 /**
+ * Event payload when split screen is requested
+ */
+export interface SplitScreenRequestedEvent {
+  /**
+   * Timestamp when split screen was requested
+   */
+  timestamp: number;
+}
+
+/**
+ * Event payload when a form is selected from the split screen popup
+ */
+export interface FormSelectedEvent {
+  /**
+   * Selected form ID
+   */
+  id: number;
+
+  /**
+   * Form name
+   */
+  name: string;
+
+  /**
+   * Form URL to load
+   */
+  links: string;
+
+  /**
+   * Tenant ID
+   */
+  tenant_id: number;
+}
+
+/**
  * Capacitor Twilio Video Plugin Interface
  */
 export interface TwilioVideoPlugin {
@@ -490,6 +580,23 @@ export interface TwilioVideoPlugin {
    * ```
    */
   sendUsersList(options: SendUsersListOptions): Promise<void>;
+
+  /**
+   * Send forms list back to the plugin after receiving splitScreenRequested event
+   *
+   * @param options - Forms list options
+   * @returns Promise that resolves when the forms list is processed
+   *
+   * @example
+   * ```typescript
+   * await TwilioVideo.sendFormsList({
+   *   forms: [
+   *     { id: 1, tenant_id: 1, name: 'Patient Form', links: 'https://...', practitioner: 1, responder: 1, createdAt: '...', updatedAt: '...' }
+   *   ]
+   * });
+   * ```
+   */
+  sendFormsList(options: SendFormsListOptions): Promise<void>;
 
   /**
    * Listen for room connection events
@@ -645,6 +752,30 @@ export interface TwilioVideoPlugin {
   addListener(
     eventName: 'popupError',
     listenerFunc: (event: PopupErrorEvent) => void,
+  ): Promise<PluginListenerHandle> & PluginListenerHandle;
+
+  /**
+   * Listen for split screen requested events
+   *
+   * @param eventName - 'splitScreenRequested'
+   * @param listenerFunc - Callback function
+   * @returns Promise with PluginListenerHandle to remove the listener
+   */
+  addListener(
+    eventName: 'splitScreenRequested',
+    listenerFunc: (event: SplitScreenRequestedEvent) => void,
+  ): Promise<PluginListenerHandle> & PluginListenerHandle;
+
+  /**
+   * Listen for form selected events
+   *
+   * @param eventName - 'formSelected'
+   * @param listenerFunc - Callback function
+   * @returns Promise with PluginListenerHandle to remove the listener
+   */
+  addListener(
+    eventName: 'formSelected',
+    listenerFunc: (event: FormSelectedEvent) => void,
   ): Promise<PluginListenerHandle> & PluginListenerHandle;
 
   /**

@@ -1426,6 +1426,7 @@ class VideoCallActivity : AppCompatActivity() {
                 splitScreenContainer!!.addView(primaryVideoContainer)
                 splitScreenContainer!!.addView(webView!!)
 
+
                 // STEP 7: Set up 50/50 horizontal split constraints
                 val constraintSet = ConstraintSet()
                 constraintSet.clone(splitScreenContainer!!)
@@ -1446,6 +1447,19 @@ class VideoCallActivity : AppCompatActivity() {
 
                 constraintSet.applyTo(splitScreenContainer!!)
                 Log.d(TAG, "📐 Split screen constraints applied (50/50 split)")
+
+                // STEP 7b: Apply bottom padding to webView equal to controlsContainer height
+                splitScreenContainer!!.post {
+                    val controlsHeight = controlsContainer.height
+                    Log.d(TAG, "📏 controlsContainer measured height: $controlsHeight")
+                    webView?.setPadding(
+                        webView?.paddingLeft ?: 0,
+                        webView?.paddingTop ?: 0,
+                        webView?.paddingRight ?: 0,
+                        controlsHeight
+                    )
+                    Log.d(TAG, "📐 webView bottom padding set to controlsContainer height: $controlsHeight")
+                }
 
                 // STEP 8: Add split container to root
                 contentRoot.addView(splitScreenContainer!!, 0) // Add at index 0 (bottom)

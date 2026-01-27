@@ -732,29 +732,36 @@ class VideoCallViewController: UIViewController {
         webView!.translatesAutoresizingMaskIntoConstraints = false
         splitScreenContainer!.addSubview(webView!)
 
-        // STEP 5: Apply split screen constraints
-        splitScreenConstraints = [
-            // Container fills safe area
+
+        // STEP 5: Apply split screen constraints (webView above controlsContainer)
+        // Measure controlsContainer height
+        view.layoutIfNeeded() // Ensure layout is up to date
+        let controlsHeight = controlsContainer.frame.height
+        print("📏 controlsContainer measured height: \(controlsHeight)")
+
+        // Constraints
+        let containerConstraints = [
             splitScreenContainer!.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             splitScreenContainer!.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             splitScreenContainer!.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            splitScreenContainer!.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-
-            // Video container - left half
+            splitScreenContainer!.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        ]
+        let videoConstraints = [
             primaryVideoContainer.leadingAnchor.constraint(equalTo: splitScreenContainer!.leadingAnchor),
             primaryVideoContainer.topAnchor.constraint(equalTo: splitScreenContainer!.topAnchor),
             primaryVideoContainer.bottomAnchor.constraint(equalTo: splitScreenContainer!.bottomAnchor),
-            primaryVideoContainer.widthAnchor.constraint(equalTo: splitScreenContainer!.widthAnchor, multiplier: 0.5),
-
-            // WebView - right half
+            primaryVideoContainer.widthAnchor.constraint(equalTo: splitScreenContainer!.widthAnchor, multiplier: 0.5)
+        ]
+        let webViewConstraints = [
             webView!.leadingAnchor.constraint(equalTo: primaryVideoContainer.trailingAnchor),
             webView!.trailingAnchor.constraint(equalTo: splitScreenContainer!.trailingAnchor),
             webView!.topAnchor.constraint(equalTo: splitScreenContainer!.topAnchor),
-            webView!.bottomAnchor.constraint(equalTo: splitScreenContainer!.bottomAnchor)
+            // Key fix: webView bottom = controlsContainer.top (in splitScreenContainer's coordinate space)
+            webView!.bottomAnchor.constraint(equalTo: controlsContainer.topAnchor)
         ]
-
+        splitScreenConstraints = containerConstraints + videoConstraints + webViewConstraints
         NSLayoutConstraint.activate(splitScreenConstraints)
-        print("📐 Split screen constraints activated (\(splitScreenConstraints.count) constraints)")
+        print("📐 Split screen constraints activated (\(splitScreenConstraints.count) constraints, webView bottom = controlsContainer.top)")
 
         // STEP 6: Update layout mode
         currentLayoutMode = .splitScreen

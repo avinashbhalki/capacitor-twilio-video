@@ -105,11 +105,18 @@ class VideoCallActivity : AppCompatActivity() {
     private var userListDialog: androidx.appcompat.app.AlertDialog? = null
 
     // Split screen management
+    enum class LayoutMode {
+        FULL_SCREEN,
+        SPLIT_SCREEN
+    }
+
+    private var currentLayoutMode: LayoutMode = LayoutMode.FULL_SCREEN
     private var isSplitScreenOpen = false
     private var formSelectionDialog: AlertDialog? = null
     private var splitScreenContainer: ConstraintLayout? = null
     private var webView: WebView? = null
     private var pendingForms: List<Map<String, Any>> = emptyList()
+    private var originalRootLayout: FrameLayout? = null
 
     // Extended properties for new functionality
     private var userIdentity: String? = null
@@ -1242,7 +1249,16 @@ class VideoCallActivity : AppCompatActivity() {
 
     private fun isTablet(): Boolean {
         val configuration = resources.configuration
-        return ((configuration.screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK) >= Configuration.SCREENLAYOUT_SIZE_LARGE)
+        val screenLayout = configuration.screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK
+        val smallestWidthDp = configuration.smallestScreenWidthDp
+
+        val isTabletBySize = screenLayout >= Configuration.SCREENLAYOUT_SIZE_LARGE
+        val isTabletByWidth = smallestWidthDp >= 600
+
+        val result = isTabletBySize || isTabletByWidth
+        Log.d(TAG, "Tablet detection: screenLayout=$screenLayout, smallestWidthDp=$smallestWidthDp, isTablet=$result")
+
+        return result
     }
 
     private fun updateActionButtonVisibility() {
@@ -1270,8 +1286,13 @@ class VideoCallActivity : AppCompatActivity() {
     // ===== Split Screen Management =====
 
     private fun handleSplitScreenButtonTap() {
-        Log.d(TAG, "Split screen button tapped")
+        Log.d(TAG, "📱 Split screen button tapped")
+        Log.d(TAG, "📱 Device type: ${if (isTablet()) "Tablet" else "Phone"}")
 
+        if (!isTablet()) {
+            Log.w(TAG, "⚠️ Split screen feature only available on tablets")
+            return
+        }
         if (isSplitScreenOpen) {
             // Close split screen
             closeSplitScreen()
@@ -1347,100 +1368,175 @@ class VideoCallActivity : AppCompatActivity() {
     }
 
     private fun createSplitScreenLayout() {
-        Log.d(TAG, "Creating split screen layout")
+        Log.d(TAG, "📐 Creating split screen layout for tablet")
 
-        // Get the root layout
-        val rootLayout = findViewById<FrameLayout>(android.R.id.content)
-        val contentView = rootLayout.getChildAt(0)
+        if (!isTablet()) {
+            Log.w(TAG, "⚠️ Split screen layout called on non-tablet device, ignoring")
+            return
+        }
 
-        // Create split screen container
-        splitScreenContainer = ConstraintLayout(this)
-        splitScreenContainer!!.layoutParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        )
-        splitScreenContainer!!.setBackgroundColor(Color.BLACK)
+        if (currentLayoutMode == LayoutMode.SPLIT_SCREEN) {
+            Log.w(TAG, "⚠️ Already in split screen mode")
+            return
+        }
 
-        // Create WebView
-        webView = WebView(this)
-        webView!!.id = View.generateViewId()
-        webView!!.settings.javaScriptEnabled = true
-        webView!!.setBackgroundColor(Color.WHITE)
+        runOnUiThread {
+            try {
+                // STEP 1: Get content root and store original layout
+                val contentRoot = findViewById<FrameLayout>(android.R.id.content)
+                originalRootLayout = contentRoot.getChildAt(0) as? FrameLayout
 
-        // Add views to split screen container
-        splitScreenContainer!!.addView(primaryVideoContainer)
-        splitScreenContainer!!.addView(webView)
+                if (originalRootLayout == null) {
+                    Log.e(TAG, "Failed to get original root layout")
+                    return@runOnUiThread
+                }
 
-        // Set up constraints for 50/50 split
-        val constraintSet = ConstraintSet()
-        constraintSet.clone(splitScreenContainer)
+                Log.d(TAG, "📐 Storing original layout reference")
 
-        // Video container - left half
-        constraintSet.connect(primaryVideoContainer.id, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-        constraintSet.connect(primaryVideoContainer.id, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-        constraintSet.connect(primaryVideoContainer.id, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-        constraintSet.constrainPercentWidth(primaryVideoContainer.id, 0.5f)
+                // STEP 2: Remove primary video container from its current parent
+                (primaryVideoContainer.parent as? ViewGroup)?.removeView(primaryVideoContainer)
 
-        // WebView - right half
-        constraintSet.connect(webView!!.id, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-        constraintSet.connect(webView!!.id, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-        constraintSet.connect(webView!!.id, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-        constraintSet.constrainPercentWidth(webView!!.id, 0.5f)
+                // STEP 3: Create split screen container
+                splitScreenContainer = ConstraintLayout(this)
+                splitScreenContainer!!.id = View.generateViewId()
+                splitScreenContainer!!.layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+                splitScreenContainer!!.setBackgroundColor(Color.BLACK)
 
-        constraintSet.applyTo(splitScreenContainer)
+                // STEP 4: Create WebView
+                webView = WebView(this)
+                webView!!.id = View.generateViewId()
+                webView!!.settings.javaScriptEnabled = true
+                webView!!.setBackgroundColor(Color.WHITE)
 
-        // Replace content view with split screen container
-        rootLayout.removeView(contentView)
-        rootLayout.addView(splitScreenContainer)
+                // STEP 5: Ensure primary video container has proper layout params
+                primaryVideoContainer.layoutParams = ConstraintLayout.LayoutParams(
+                    0, // Width will be set by constraints
+                    ConstraintLayout.LayoutParams.MATCH_PARENT
+                )
 
-        // Add back the UI controls
-        splitScreenContainer!!.addView(thumbnailGridContainer)
-        splitScreenContainer!!.addView(controlsContainer)
-        splitScreenContainer!!.addView(roleActionButton)
-        splitScreenContainer!!.addView(splitScreenButton)
+                webView!!.layoutParams = ConstraintLayout.LayoutParams(
+                    0, // Width will be set by constraints
+                    ConstraintLayout.LayoutParams.MATCH_PARENT
+                )
+
+                // STEP 6: Add views to split container
+                splitScreenContainer!!.addView(primaryVideoContainer)
+                splitScreenContainer!!.addView(webView!!)
+
+                // STEP 7: Set up 50/50 horizontal split constraints
+                val constraintSet = ConstraintSet()
+                constraintSet.clone(splitScreenContainer!!)
+
+                // Video container - left half (50%)
+                constraintSet.connect(primaryVideoContainer.id, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
+                constraintSet.connect(primaryVideoContainer.id, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+                constraintSet.connect(primaryVideoContainer.id, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+                constraintSet.connect(primaryVideoContainer.id, ConstraintSet.END, webView!!.id, ConstraintSet.START)
+                constraintSet.constrainPercentWidth(primaryVideoContainer.id, 0.5f)
+
+                // WebView - right half (50%)
+                constraintSet.connect(webView!!.id, ConstraintSet.START, primaryVideoContainer.id, ConstraintSet.END)
+                constraintSet.connect(webView!!.id, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+                constraintSet.connect(webView!!.id, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+                constraintSet.connect(webView!!.id, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+                constraintSet.constrainPercentWidth(webView!!.id, 0.5f)
+
+                constraintSet.applyTo(splitScreenContainer!!)
+                Log.d(TAG, "📐 Split screen constraints applied (50/50 split)")
+
+                // STEP 8: Add split container to root
+                contentRoot.addView(splitScreenContainer!!, 0) // Add at index 0 (bottom)
+
+                // STEP 9: Re-add controls on top
+                (thumbnailGridContainer.parent as? ViewGroup)?.removeView(thumbnailGridContainer)
+                (controlsContainer.parent as? ViewGroup)?.removeView(controlsContainer)
+                (roleActionButton.parent as? ViewGroup)?.removeView(roleActionButton)
+                (splitScreenButton.parent as? ViewGroup)?.removeView(splitScreenButton)
+
+                splitScreenContainer!!.addView(thumbnailGridContainer)
+                splitScreenContainer!!.addView(controlsContainer)
+                splitScreenContainer!!.addView(roleActionButton)
+                splitScreenContainer!!.addView(splitScreenButton)
+
+                // STEP 10: Update mode
+                currentLayoutMode = LayoutMode.SPLIT_SCREEN
+
+                // STEP 11: Force layout
+                splitScreenContainer!!.requestLayout()
+
+                Log.d(TAG, "✅ Split screen layout created successfully")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error creating split screen layout: ${e.message}", e)
+                // Attempt to restore if something went wrong
+                currentLayoutMode = LayoutMode.FULL_SCREEN
+            }
+        }
     }
 
     private fun closeSplitScreen() {
-        Log.d(TAG, "Closing split screen")
+        Log.d(TAG, "📐 Closing split screen")
 
-        // Get the root layout
-        val rootLayout = findViewById<FrameLayout>(android.R.id.content)
-
-        // Remove split screen container
-        if (splitScreenContainer != null) {
-            rootLayout.removeView(splitScreenContainer)
-
-            // Create new single screen layout
-            val newRootLayout = FrameLayout(this)
-            newRootLayout.layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-            newRootLayout.setBackgroundColor(Color.BLACK)
-
-            // Restore video container to full screen
-            primaryVideoContainer.layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-
-            // Add all views back to single screen
-            newRootLayout.addView(primaryVideoContainer)
-            newRootLayout.addView(thumbnailGridContainer)
-            newRootLayout.addView(controlsContainer)
-            newRootLayout.addView(roleActionButton)
-            newRootLayout.addView(splitScreenButton)
-
-            rootLayout.addView(newRootLayout)
-
-            // Clean up
-            splitScreenContainer = null
-            webView = null
+        if (currentLayoutMode != LayoutMode.SPLIT_SCREEN) {
+            Log.w(TAG, "⚠️ Not in split screen mode, nothing to close")
+            return
         }
 
-        // Update button state
-        isSplitScreenOpen = false
-        updateSplitScreenButtonIcon()
+        runOnUiThread {
+            try {
+                val contentRoot = findViewById<FrameLayout>(android.R.id.content)
+
+                // STEP 1: Remove primary video container from split container
+                (primaryVideoContainer.parent as? ViewGroup)?.removeView(primaryVideoContainer)
+
+                // STEP 2: Remove controls from split container
+                (thumbnailGridContainer.parent as? ViewGroup)?.removeView(thumbnailGridContainer)
+                (controlsContainer.parent as? ViewGroup)?.removeView(controlsContainer)
+                (roleActionButton.parent as? ViewGroup)?.removeView(roleActionButton)
+                (splitScreenButton.parent as? ViewGroup)?.removeView(splitScreenButton)
+
+                // STEP 3: Remove split screen container
+                splitScreenContainer?.let { container ->
+                    contentRoot.removeView(container)
+                }
+
+                // STEP 4: Clean up webview
+                webView?.destroy()
+                webView = null
+                splitScreenContainer = null
+
+                // STEP 5: Restore primary video container to fullscreen
+                if (originalRootLayout != null) {
+                    primaryVideoContainer.layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+
+                    originalRootLayout!!.addView(primaryVideoContainer, 0) // Add at bottom
+
+                    // STEP 6: Re-add controls on top
+                    originalRootLayout!!.addView(thumbnailGridContainer)
+                    originalRootLayout!!.addView(controlsContainer)
+                    originalRootLayout!!.addView(roleActionButton)
+                    originalRootLayout!!.addView(splitScreenButton)
+                }
+
+                // STEP 7: Update mode
+                currentLayoutMode = LayoutMode.FULL_SCREEN
+
+                // STEP 8: Update button state
+                isSplitScreenOpen = false
+                updateSplitScreenButtonIcon()
+
+                Log.d(TAG, "✅ Split screen closed, fullscreen restored")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing split screen: ${e.message}", e)
+            }
+        }
     }
 
     private fun updateSplitScreenButtonIcon() {

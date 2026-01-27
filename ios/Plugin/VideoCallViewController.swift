@@ -72,11 +72,21 @@ class VideoCallViewController: UIViewController {
     private var userListAlert: UIAlertController?
 
     // Split screen management
+    enum LayoutMode {
+        case fullScreen
+        case splitScreen
+    }
+
+    private var currentLayoutMode: LayoutMode = .fullScreen
     private var isSplitScreenOpen = false
     private var formSelectionAlert: UIAlertController?
     private var splitScreenContainer: UIView?
     private var webView: WKWebView?
     private var pendingForms: [[String: Any]] = []
+
+    // Constraint management
+    private var fullScreenConstraints: [NSLayoutConstraint] = []
+    private var splitScreenConstraints: [NSLayoutConstraint] = []
 
     // Participant Rendering Manager
     private var participantRenderers: [String: ParticipantRenderer] = [:]
@@ -104,10 +114,21 @@ class VideoCallViewController: UIViewController {
         view.backgroundColor = .black
 
         // Primary video container (remote participant - full screen)
-        primaryVideoContainer = UIView(frame: view.bounds)
+        primaryVideoContainer = UIView()
         primaryVideoContainer.backgroundColor = .black
-        primaryVideoContainer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        primaryVideoContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(primaryVideoContainer)
+
+        // Store fullscreen constraints for later deactivation
+        fullScreenConstraints = [
+            primaryVideoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            primaryVideoContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            primaryVideoContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            primaryVideoContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ]
+        NSLayoutConstraint.activate(fullScreenConstraints)
+
+        print("📐 Fullscreen constraints activated for primaryVideoContainer")
 
         // Thumbnail grid container (top-right, overlays primary video)
         thumbnailGridContainer = UIStackView()
@@ -588,7 +609,13 @@ class VideoCallViewController: UIViewController {
     // MARK: - Split Screen Management
 
     @objc private func handleSplitScreenButtonTap() {
-        print("Split screen button tapped")
+        print("📱 Split screen button tapped")
+        print("📱 Device type: \(isTablet() ? "iPad (tablet)" : "iPhone (phone)")")
+
+        guard isTablet() else {
+            print("⚠️ Split screen feature only available on iPad")
+            return
+        }
 
         if isSplitScreenOpen {
             // Close split screen
@@ -673,68 +700,123 @@ class VideoCallViewController: UIViewController {
     }
 
     private func createSplitScreenLayout() {
-        print("Creating split screen layout")
+        print("📐 Creating split screen layout for iPad")
 
-        // Create main container
+        guard isTablet() else {
+            print("⚠️ Split screen layout called on non-tablet device, ignoring")
+            return
+        }
+
+        guard currentLayoutMode == .fullScreen else {
+            print("⚠️ Already in split screen mode")
+            return
+        }
+
+        // STEP 1: Deactivate fullscreen constraints
+        print("📐 Deactivating fullscreen constraints (\(fullScreenConstraints.count) constraints)")
+        NSLayoutConstraint.deactivate(fullScreenConstraints)
+
+        // STEP 2: Create split screen container
         splitScreenContainer = UIView()
         splitScreenContainer!.backgroundColor = .black
         splitScreenContainer!.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(splitScreenContainer!)
+        view.insertSubview(splitScreenContainer!, belowSubview: controlsContainer)
 
-        // Create WebView
+        // STEP 3: Reparent primaryVideoContainer to split container
+        primaryVideoContainer.removeFromSuperview()
+        splitScreenContainer!.addSubview(primaryVideoContainer)
+
+        // STEP 4: Create WebView
         webView = WKWebView()
         webView!.backgroundColor = .white
         webView!.translatesAutoresizingMaskIntoConstraints = false
         splitScreenContainer!.addSubview(webView!)
 
-        // Layout constraints for split screen (50/50 split on iPad)
-        NSLayoutConstraint.activate([
-            // Split screen container takes full screen
+        // STEP 5: Apply split screen constraints
+        splitScreenConstraints = [
+            // Container fills safe area
             splitScreenContainer!.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             splitScreenContainer!.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             splitScreenContainer!.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             splitScreenContainer!.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
 
-            // WebView takes right half
-            webView!.trailingAnchor.constraint(equalTo: splitScreenContainer!.trailingAnchor),
-            webView!.topAnchor.constraint(equalTo: splitScreenContainer!.topAnchor),
-            webView!.bottomAnchor.constraint(equalTo: splitScreenContainer!.bottomAnchor),
-            webView!.widthAnchor.constraint(equalTo: splitScreenContainer!.widthAnchor, multiplier: 0.5),
-
-            // Resize video container to take left half
+            // Video container - left half
             primaryVideoContainer.leadingAnchor.constraint(equalTo: splitScreenContainer!.leadingAnchor),
             primaryVideoContainer.topAnchor.constraint(equalTo: splitScreenContainer!.topAnchor),
             primaryVideoContainer.bottomAnchor.constraint(equalTo: splitScreenContainer!.bottomAnchor),
-            primaryVideoContainer.widthAnchor.constraint(equalTo: splitScreenContainer!.widthAnchor, multiplier: 0.5)
-        ])
+            primaryVideoContainer.widthAnchor.constraint(equalTo: splitScreenContainer!.widthAnchor, multiplier: 0.5),
 
-        // Bring controls to front
+            // WebView - right half
+            webView!.leadingAnchor.constraint(equalTo: primaryVideoContainer.trailingAnchor),
+            webView!.trailingAnchor.constraint(equalTo: splitScreenContainer!.trailingAnchor),
+            webView!.topAnchor.constraint(equalTo: splitScreenContainer!.topAnchor),
+            webView!.bottomAnchor.constraint(equalTo: splitScreenContainer!.bottomAnchor)
+        ]
+
+        NSLayoutConstraint.activate(splitScreenConstraints)
+        print("📐 Split screen constraints activated (\(splitScreenConstraints.count) constraints)")
+
+        // STEP 6: Update layout mode
+        currentLayoutMode = .splitScreen
+
+        // STEP 7: Force layout update
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+
+        // STEP 8: Bring controls to front
         view.bringSubviewToFront(controlsContainer)
         view.bringSubviewToFront(thumbnailGridContainer)
         view.bringSubviewToFront(roleActionButton)
         view.bringSubviewToFront(splitScreenButton)
+
+        print("✅ Split screen layout created successfully")
     }
 
     private func closeSplitScreen() {
-        print("Closing split screen")
+        print("📐 Closing split screen")
 
-        // Remove split screen container
+        guard currentLayoutMode == .splitScreen else {
+            print("⚠️ Not in split screen mode, nothing to close")
+            return
+        }
+
+        // STEP 1: Deactivate split screen constraints
+        print("📐 Deactivating split screen constraints (\(splitScreenConstraints.count) constraints)")
+        NSLayoutConstraint.deactivate(splitScreenConstraints)
+        splitScreenConstraints.removeAll()
+
+        // STEP 2: Reparent primaryVideoContainer back to main view
+        primaryVideoContainer.removeFromSuperview()
+        view.insertSubview(primaryVideoContainer, at: 0) // Insert at bottom
+
+        // STEP 3: Remove split screen container and webview
+        webView?.removeFromSuperview()
         splitScreenContainer?.removeFromSuperview()
-        splitScreenContainer = nil
         webView = nil
+        splitScreenContainer = nil
 
-        // Restore video container to full screen
-        primaryVideoContainer.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            primaryVideoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            primaryVideoContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            primaryVideoContainer.topAnchor.constraint(equalTo: view.topAnchor),
-            primaryVideoContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
+        // STEP 4: Reactivate fullscreen constraints
+        print("📐 Reactivating fullscreen constraints (\(fullScreenConstraints.count) constraints)")
+        NSLayoutConstraint.activate(fullScreenConstraints)
+
+        // STEP 5: Update layout mode
+        currentLayoutMode = .fullScreen
+
+        // STEP 6: Force layout update
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+
+        // STEP 7: Ensure controls are on top
+        view.bringSubviewToFront(controlsContainer)
+        view.bringSubviewToFront(thumbnailGridContainer)
+        view.bringSubviewToFront(roleActionButton)
+        view.bringSubviewToFront(splitScreenButton)
 
         // Update button state
         isSplitScreenOpen = false
         updateSplitScreenButtonIcon()
+
+        print("✅ Split screen closed, fullscreen restored")
     }
 
     private func updateSplitScreenButtonIcon() {

@@ -157,37 +157,54 @@ class TwilioVideoPlugin : Plugin() {
     }
 
     @PluginMethod
-    fun sendFormsList(call: PluginCall) {
-        Log.d("TwilioVideoPlugin", "sendFormsList method invoked")
+    fun sendFormList(call: PluginCall) {
+        Log.d("TwilioVideoPlugin", "sendFormList method invoked")
 
         val formsArray = call.getArray("forms")
-        val forms = mutableListOf<Map<String, Any>>()
+        val validatedForms = mutableListOf<Map<String, Any>>()
 
         if (formsArray != null) {
-            Log.d("TwilioVideoPlugin", "sendFormsList parsing ${formsArray.length()} forms")
+            Log.d("TwilioVideoPlugin", "sendFormList parsing ${formsArray.length()} forms")
             for (i in 0 until formsArray.length()) {
                 try {
                     val formObj = formsArray.getJSONObject(i)
-                    val formMap = mutableMapOf<String, Any>()
 
-                    formObj.keys().forEach { key ->
-                        val value = formObj.get(key)
-                        formMap[key] = value
+                    // Validate required fields only, ignore optional fields safely
+                    val id = if (formObj.has("id")) formObj.optInt("id", -1) else -1
+                    val tenantId = if (formObj.has("tenant_id")) formObj.optInt("tenant_id", -1) else -1
+                    val name = formObj.optString("name", "")
+                    val links = formObj.optString("links", "")
+
+                    if (id != -1 && tenantId != -1 && name.isNotEmpty() && links.isNotEmpty()) {
+                        // Create validated form with only required fields
+                        val validatedForm = mapOf<String, Any>(
+                            "id" to id,
+                            "tenant_id" to tenantId,
+                            "name" to name,
+                            "links" to links
+                        )
+
+                        validatedForms.add(validatedForm)
+                        Log.d("TwilioVideoPlugin", "sendFormList parsed form: $name (id=$id)")
+
+                        // Log ignored optional fields if present
+                        if (formObj.has("practitioner") || formObj.has("responder") ||
+                            formObj.has("createdAt") || formObj.has("updatedAt")) {
+                            Log.d("TwilioVideoPlugin", "sendFormList ignored optional fields for form: $name")
+                        }
+                    } else {
+                        Log.w("TwilioVideoPlugin", "sendFormList skipping invalid form at index $i (missing required fields)")
                     }
-
-                    forms.add(formMap)
-                    Log.d("TwilioVideoPlugin", "sendFormsList parsed form: ${formObj.optString("name", "Unknown")}")
                 } catch (e: Exception) {
-                    Log.e("TwilioVideoPlugin", "sendFormsList error parsing form at index $i: ${e.message}")
+                    Log.e("TwilioVideoPlugin", "sendFormList error parsing form at index $i: ${e.message}")
                 }
             }
         } else {
-            Log.d("TwilioVideoPlugin", "sendFormsList received null forms array")
+            Log.d("TwilioVideoPlugin", "sendFormList received null forms array")
         }
 
-        Log.i("TwilioVideoPlugin", "sendFormsList calling handleFormsList with ${forms.size} forms")
-        VideoCallActivity.getInstance()?.handleFormsList(forms)
-        call.resolve()
+        Log.i("TwilioVideoPlugin", "sendFormList calling handleFormsList with ${validatedForms.size} validated forms")
+        VideoCallActivity.getInstance()?.handleFormsList(validatedForms)
     }
 
     fun notifyRoomConnected(roomName: String) {

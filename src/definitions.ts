@@ -66,7 +66,7 @@ export interface User {
 }
 
 /**
- * Form object structure for sendFormsList
+ * Form object structure for sendFormList
  */
 export interface Form {
   /**
@@ -128,7 +128,7 @@ export interface SendUsersListOptions {
 /**
  * Options for sending forms list back to plugin
  */
-export interface SendFormsListOptions {
+export interface SendFormListOptions {
   /**
    * Array of forms to display in the popup
    */
@@ -589,14 +589,14 @@ export interface TwilioVideoPlugin {
    *
    * @example
    * ```typescript
-   * await TwilioVideo.sendFormsList({
+   * await TwilioVideo.sendFormList({
    *   forms: [
    *     { id: 1, tenant_id: 1, name: 'Patient Form', links: 'https://...', practitioner: 1, responder: 1, createdAt: '...', updatedAt: '...' }
    *   ]
    * });
    * ```
    */
-  sendFormsList(options: SendFormsListOptions): Promise<void>;
+  sendFormList(options: SendFormListOptions): Promise<void>;
 
   /**
    * Listen for room connection events

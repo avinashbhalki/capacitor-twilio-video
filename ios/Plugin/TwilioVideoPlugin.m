@@ -11,5 +11,5 @@ CAP_PLUGIN(TwilioVideoPlugin, "TwilioVideo",
     CAP_PLUGIN_METHOD(flipCamera, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(setSpeaker, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(sendUsersList, CAPPluginReturnPromise);
-    CAP_PLUGIN_METHOD(sendFormsList, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(sendFormList, CAPPluginReturnPromise);
 )

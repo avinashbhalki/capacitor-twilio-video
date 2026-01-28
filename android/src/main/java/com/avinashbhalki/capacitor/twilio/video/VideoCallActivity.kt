@@ -136,6 +136,10 @@ class VideoCallActivity : AppCompatActivity() {
     private var isBluetoothScoOn = false
     private var preferredAudioRoute: AudioRoute = AudioRoute.SPEAKER
 
+    // Network quality tracking
+    private var lastLocalNetworkLevel: Int = 5 // Start assuming good network
+    private val networkQualityLevels = mutableMapOf<String, Int>() // identity -> network level
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
@@ -583,6 +587,9 @@ class VideoCallActivity : AppCompatActivity() {
             Log.d(TAG, "Connected to room: ${room.name}")
             localParticipant = room.localParticipant
 
+            // Set local participant listener for network quality
+            localParticipant?.setListener(localParticipantListener)
+
             // Transition to CONNECTED state
             transitionToState(CallState.CONNECTED)
 
@@ -888,6 +895,89 @@ class VideoCallActivity : AppCompatActivity() {
         updateFocusedParticipant(newFocus, isUserSelection = false)
     }
 
+    private val localParticipantListener = object : LocalParticipant.Listener {
+        override fun onNetworkQualityLevelChanged(
+            participant: LocalParticipant,
+            networkQualityLevel: NetworkQualityLevel
+        ) {
+            val level = networkQualityLevel.ordinal
+            Log.d(TAG, "📶 Local network quality changed: $level (previous: $lastLocalNetworkLevel)")
+
+            // Show toast only when transitioning INTO level 0 or 1 (not when already there)
+            if ((level == 0 || level == 1) && lastLocalNetworkLevel > 1) {
+                showLocalNetworkWarning(level)
+            }
+
+            lastLocalNetworkLevel = level
+
+            TwilioVideoPlugin.getInstance()?.notifyNetworkQualityChanged(
+                participant.identity,
+                level,
+                true
+            )
+        }
+
+        override fun onAudioTrackPublished(
+            participant: LocalParticipant,
+            publication: LocalAudioTrackPublication
+        ) {}
+
+        override fun onAudioTrackPublicationFailed(
+            participant: LocalParticipant,
+            track: LocalAudioTrack,
+            exception: TwilioException
+        ) {}
+
+        override fun onVideoTrackPublished(
+            participant: LocalParticipant,
+            publication: LocalVideoTrackPublication
+        ) {}
+
+        override fun onVideoTrackPublicationFailed(
+            participant: LocalParticipant,
+            track: LocalVideoTrack,
+            exception: TwilioException
+        ) {}
+
+        override fun onDataTrackPublished(
+            participant: LocalParticipant,
+            publication: LocalDataTrackPublication
+        ) {}
+
+        override fun onDataTrackPublicationFailed(
+            participant: LocalParticipant,
+            track: LocalDataTrack,
+            exception: TwilioException
+        ) {}
+    }
+
+    private fun showLocalNetworkWarning(level: Int) {
+        val title: String
+        val message = "Check your internet connection and rejoin the call"
+
+        title = if (level == 0) {
+            "Your network is very bad"
+        } else {
+            "Your network is bad"
+        }
+
+        Log.w(TAG, "⚠️ Showing network warning: $title")
+
+        runOnUiThread {
+            Toast.makeText(this, "$title\n$message", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun updateNetworkQualityIndicator(identity: String, level: Int) {
+        // TODO: Implement visual network indicator on participant tile
+        Log.d(TAG, "📶 Update network indicator for $identity: level $level")
+    }
+
+    private fun updateMuteIndicator(identity: String, isMuted: Boolean) {
+        // TODO: Implement visual mute indicator on participant tile
+        Log.d(TAG, "🔇 Update mute indicator for $identity: muted=$isMuted")
+    }
+
     private val remoteParticipantListener = object : RemoteParticipant.Listener {
         override fun onVideoTrackPublished(
             participant: RemoteParticipant,
@@ -973,12 +1063,18 @@ class VideoCallActivity : AppCompatActivity() {
         override fun onAudioTrackEnabled(
             participant: RemoteParticipant,
             publication: RemoteAudioTrackPublication
-        ) {}
+        ) {
+            Log.d(TAG, "Participant ${participant.identity} enabled audio track")
+            updateMuteIndicator(participant.identity, isMuted = false)
+        }
 
         override fun onAudioTrackDisabled(
             participant: RemoteParticipant,
             publication: RemoteAudioTrackPublication
-        ) {}
+        ) {
+            Log.d(TAG, "Participant ${participant.identity} disabled audio track")
+            updateMuteIndicator(participant.identity, isMuted = true)
+        }
 
         override fun onVideoTrackEnabled(
             participant: RemoteParticipant,
@@ -994,9 +1090,18 @@ class VideoCallActivity : AppCompatActivity() {
             participant: RemoteParticipant,
             networkQualityLevel: NetworkQualityLevel
         ) {
+            val level = networkQualityLevel.ordinal
+            Log.d(TAG, "📶 Remote participant ${participant.identity} network quality: $level")
+
+            // Store network level for this participant
+            networkQualityLevels[participant.identity] = level
+
+            // Update UI indicator for this participant
+            updateNetworkQualityIndicator(participant.identity, level)
+
             TwilioVideoPlugin.getInstance()?.notifyNetworkQualityChanged(
                 participant.identity,
-                networkQualityLevel.ordinal,
+                level,
                 false
             )
         }
@@ -1721,6 +1826,15 @@ class VideoCallActivity : AppCompatActivity() {
         val userId = selectedUser["user_id"] ?: ""
         val fullName = selectedUser["full_name"] ?: ""
 
+        // Check if user is already in the call
+        if (isUserAlreadyInCall(id, userId, fullName)) {
+            Log.w(TAG, "🚫 User already in call: $fullName (id=$id, userId=$userId)")
+            showUserAlreadyInCallDialog(fullName)
+            return
+        }
+
+        Log.d(TAG, "✅ User not in call, proceeding: $fullName (id=$id, userId=$userId)")
+
         // Notify Ionic about the user selection
         TwilioVideoPlugin.getInstance()?.notifyUserSelected(
             id,
@@ -1735,6 +1849,42 @@ class VideoCallActivity : AppCompatActivity() {
 
         // Clear pending role key
         pendingRoleKey = null
+    }
+
+    private fun isUserAlreadyInCall(identity: String, userId: String, fullName: String): Boolean {
+        val currentRoom = room ?: return false
+
+        // Check local participant
+        currentRoom.localParticipant?.let { local ->
+            if (local.identity == identity || local.identity == userId ||
+                local.identity.contains(fullName, ignoreCase = true) ||
+                fullName.contains(local.identity, ignoreCase = true)) {
+                Log.d(TAG, "🔍 Match found in local participant: ${local.identity}")
+                return true
+            }
+        }
+
+        // Check all remote participants
+        currentRoom.remoteParticipants.forEach { participant ->
+            if (participant.identity == identity || participant.identity == userId ||
+                participant.identity.contains(fullName, ignoreCase = true) ||
+                fullName.contains(participant.identity, ignoreCase = true)) {
+                Log.d(TAG, "🔍 Match found in remote participant: ${participant.identity}")
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun showUserAlreadyInCallDialog(fullName: String) {
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle("User already in call")
+                .setMessage("This user is already part of the call")
+                .setPositiveButton("OK", null)
+                .show()
+        }
     }
 
     private fun cleanup() {

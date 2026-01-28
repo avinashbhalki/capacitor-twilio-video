@@ -28,6 +28,8 @@ class VideoCallViewController: UIViewController {
         let videoView: VideoView
         var videoTrack: RemoteVideoTrack?
         var isFocused: Bool
+        var networkIndicator: UIImageView?
+        var muteIndicator: UIImageView?
     }
 
     // MARK: - Properties
@@ -94,6 +96,10 @@ class VideoCallViewController: UIViewController {
     private var dominantSpeakerIdentity: String?
     private var userHasSelectedParticipant = false // User selection overrides dominant speaker
     private var dominantSpeakerDebounceTimer: Timer?
+
+    // Network quality tracking
+    private var lastLocalNetworkLevel: Int = 5 // Start assuming good network
+    private var networkQualityLevels: [String: Int] = [:] // identity -> network level
 
     // MARK: - Lifecycle
     override func viewDidLoad() {
@@ -987,9 +993,19 @@ class VideoCallViewController: UIViewController {
     }
 
     private func handleUserSelection(selectedUser: [String: String], selectedRoleKey: String) {
+
         let id = selectedUser["id"] ?? ""
         let userId = selectedUser["user_id"] ?? ""
         let fullName = selectedUser["full_name"] ?? ""
+
+        // Check if user is already in the call (id, userId, or fullName contains)
+        if isUserAlreadyInCall(identity: id, userId: userId, fullName: fullName) {
+            print("🚫 User already in call: \(fullName) (id=\(id), userId=\(userId))")
+            showUserAlreadyInCallAlert(fullName: fullName)
+            return
+        }
+
+        print("✅ User not in call, proceeding: \(fullName) (id=\(id), userId=\(userId))")
 
         // Notify Ionic about the user selection
         TwilioVideoPlugin.getInstance()?.notifyUserSelected(
@@ -1005,6 +1021,44 @@ class VideoCallViewController: UIViewController {
 
         // Clear pending role key
         pendingRoleKey = nil
+    }
+
+    private func isUserAlreadyInCall(identity: String, userId: String, fullName: String) -> Bool {
+        guard let room = room else {
+            return false
+        }
+
+        // Check local participant
+        if let localIdentity = localParticipant?.identity {
+            if localIdentity == identity || localIdentity == userId || localIdentity.contains(fullName) || fullName.contains(localIdentity) {
+                print("🔍 Match found in local participant: \(localIdentity)")
+                return true
+            }
+        }
+
+        // Check all remote participants
+        for participant in room.remoteParticipants {
+            let participantIdentity = participant.identity
+            if participantIdentity == identity || participantIdentity == userId || participantIdentity.contains(fullName) || fullName.contains(participantIdentity) {
+                print("🔍 Match found in remote participant: \(participantIdentity)")
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func showUserAlreadyInCallAlert(fullName: String) {
+        let alert = UIAlertController(
+            title: "User already in call",
+            message: "This user is already part of the call",
+            preferredStyle: .alert
+        )
+
+        let okAction = UIAlertAction(title: "OK", style: .default)
+        alert.addAction(okAction)
+
+        present(alert, animated: true)
     }
 
 
@@ -1211,6 +1265,9 @@ extension VideoCallViewController: RoomDelegate {
         print("Connected to room: \(room.name)")
         localParticipant = room.localParticipant
 
+        // Set local participant delegate for network quality
+        localParticipant?.delegate = self
+
         // Transition to CONNECTED state
         transitionToState(.connected)
 
@@ -1377,8 +1434,48 @@ extension VideoCallViewController {
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(thumbnailTapped(_:)))
         videoView.addGestureRecognizer(tapGesture)
 
+        // Create network quality indicator
+        let networkIndicator = UIImageView()
+        networkIndicator.contentMode = .scaleAspectFit
+        networkIndicator.translatesAutoresizingMaskIntoConstraints = false
+        networkIndicator.isHidden = true // Initially hidden
+        videoView.addSubview(networkIndicator)
+
+        NSLayoutConstraint.activate([
+            networkIndicator.leadingAnchor.constraint(equalTo: videoView.leadingAnchor, constant: 4),
+            networkIndicator.bottomAnchor.constraint(equalTo: videoView.bottomAnchor, constant: -4),
+            networkIndicator.widthAnchor.constraint(equalToConstant: 20),
+            networkIndicator.heightAnchor.constraint(equalToConstant: 20)
+        ])
+
+        // Create mute indicator
+        let muteIndicator = UIImageView()
+        muteIndicator.contentMode = .scaleAspectFit
+        muteIndicator.translatesAutoresizingMaskIntoConstraints = false
+        muteIndicator.isHidden = true // Initially hidden
+        muteIndicator.image = UIImage(systemName: "mic.slash.fill")
+        muteIndicator.tintColor = .white
+        muteIndicator.backgroundColor = UIColor.red.withAlphaComponent(0.7)
+        muteIndicator.layer.cornerRadius = 12
+        muteIndicator.clipsToBounds = true
+        videoView.addSubview(muteIndicator)
+
+        NSLayoutConstraint.activate([
+            muteIndicator.trailingAnchor.constraint(equalTo: videoView.trailingAnchor, constant: -4),
+            muteIndicator.bottomAnchor.constraint(equalTo: videoView.bottomAnchor, constant: -4),
+            muteIndicator.widthAnchor.constraint(equalToConstant: 24),
+            muteIndicator.heightAnchor.constraint(equalToConstant: 24)
+        ])
+
         print("Created VideoView for participant: \(identity)")
-        return ParticipantRenderer(identity: identity, videoView: videoView, videoTrack: nil, isFocused: false)
+        return ParticipantRenderer(
+            identity: identity,
+            videoView: videoView,
+            videoTrack: nil,
+            isFocused: false,
+            networkIndicator: networkIndicator,
+            muteIndicator: muteIndicator
+        )
     }
 
     @objc private func thumbnailTapped(_ gesture: UITapGestureRecognizer) {
@@ -1651,10 +1748,12 @@ extension VideoCallViewController: RemoteParticipantDelegate {
 
     func remoteParticipantDidEnableAudioTrack(participant: RemoteParticipant, publication: RemoteAudioTrackPublication) {
         print("Participant \(participant.identity) enabled audio track")
+        updateMuteIndicator(for: participant.identity, isMuted: false)
     }
 
     func remoteParticipantDidDisableAudioTrack(participant: RemoteParticipant, publication: RemoteAudioTrackPublication) {
         print("Participant \(participant.identity) disabled audio track")
+        updateMuteIndicator(for: participant.identity, isMuted: true)
     }
 
     func didFailToSubscribeToAudioTrack(publication: RemoteAudioTrackPublication, error: Error, participant: RemoteParticipant) {
@@ -1666,11 +1765,126 @@ extension VideoCallViewController: RemoteParticipantDelegate {
     }
 
     func remoteParticipantNetworkQualityLevelDidChange(participant: RemoteParticipant, networkQualityLevel: NetworkQualityLevel) {
+        let level = networkQualityLevel.rawValue
+        print("📶 Remote participant \(participant.identity) network quality: \(level)")
+
+        // Store network level for this participant
+        networkQualityLevels[participant.identity] = level
+
+        // Update UI indicator for this participant
+        updateNetworkQualityIndicator(for: participant.identity, level: level)
+
         TwilioVideoPlugin.getInstance()?.notifyNetworkQualityChanged(
             identity: participant.identity,
-            level: networkQualityLevel.rawValue,
+            level: level,
             isLocal: false
         )
+    }
+}
+
+// MARK: - Local Participant Delegate
+extension VideoCallViewController: LocalParticipantDelegate {
+    func localParticipantNetworkQualityLevelDidChange(participant: LocalParticipant, networkQualityLevel: NetworkQualityLevel) {
+        let level = networkQualityLevel.rawValue
+        print("📶 Local network quality changed: \(level) (previous: \(lastLocalNetworkLevel))")
+
+        // Show toast only when transitioning INTO level 0 or 1 (not when already there)
+        if (level == 0 || level == 1) && lastLocalNetworkLevel > 1 {
+            showLocalNetworkWarning(level: level)
+        }
+
+        lastLocalNetworkLevel = level
+
+        TwilioVideoPlugin.getInstance()?.notifyNetworkQualityChanged(
+            identity: participant.identity,
+            level: level,
+            isLocal: true
+        )
+    }
+}
+
+// MARK: - Network Quality UI
+extension VideoCallViewController {
+    private func showLocalNetworkWarning(level: Int) {
+        let title: String
+        let message = "Check your internet connection and rejoin the call"
+
+        if level == 0 {
+            title = "Your network is very bad"
+        } else {
+            title = "Your network is bad"
+        }
+
+        print("⚠️ Showing network warning: \(title)")
+
+        DispatchQueue.main.async {
+            let alert = UIAlertController(
+                title: title,
+                message: message,
+                preferredStyle: .alert
+            )
+
+            let okAction = UIAlertAction(title: "OK", style: .default)
+            alert.addAction(okAction)
+
+            self.present(alert, animated: true)
+        }
+    }
+
+    private func updateNetworkQualityIndicator(for identity: String, level: Int) {
+        guard let renderer = participantRenderers[identity],
+              let indicator = renderer.networkIndicator else {
+            print("📶 No renderer or indicator found for \(identity)")
+            return
+        }
+
+        DispatchQueue.main.async {
+            // Map level to image asset
+            let imageName: String
+            switch level {
+            case 0:
+                imageName = "network-quality-level-0"
+            case 1:
+                imageName = "network-quality-level-1"
+            case 2:
+                imageName = "network-quality-level-2"
+            case 3:
+                imageName = "network-quality-level-3"
+            case 4:
+                imageName = "network-quality-level-4"
+            case 5:
+                imageName = "network-quality-level-5"
+            default:
+                imageName = "network-quality-level-5" // Default to good
+            }
+
+            // Load image from asset bundle
+            if let image = UIImage(named: imageName, in: Bundle(for: VideoCallViewController.self), compatibleWith: nil) {
+                indicator.image = image
+                indicator.isHidden = false
+                print("📶 Updated network indicator for \(identity): level \(level)")
+            } else {
+                // Fallback to SF Symbol if asset not found
+                let symbolName = level <= 2 ? "wifi.exclamationmark" : "wifi"
+                indicator.image = UIImage(systemName: symbolName)
+                indicator.tintColor = level <= 1 ? .red : (level <= 2 ? .orange : .green)
+                indicator.isHidden = false
+                print("📶 Using fallback symbol for \(identity): level \(level)")
+            }
+        }
+    }
+
+    private func updateMuteIndicator(for identity: String, isMuted: Bool) {
+        guard let renderer = participantRenderers[identity],
+              let indicator = renderer.muteIndicator else {
+            print("🔇 No renderer or mute indicator found for \(identity)")
+            return
+        }
+
+        DispatchQueue.main.async {
+            indicator.isHidden = !isMuted
+            print("🔇 Updated mute indicator for \(identity): muted=\(isMuted)")
+        }
     }
 }
 

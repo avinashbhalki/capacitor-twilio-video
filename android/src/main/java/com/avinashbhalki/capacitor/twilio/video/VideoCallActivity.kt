@@ -1827,7 +1827,7 @@ class VideoCallActivity : AppCompatActivity() {
         val fullName = selectedUser["full_name"] ?: ""
 
         // Check if user is already in the call
-        if (isUserAlreadyInCall(id, userId)) {
+        if (isUserAlreadyInCall(id, userId, fullName)) {
             Log.w(TAG, "🚫 User already in call: $fullName (id=$id, userId=$userId)")
             showUserAlreadyInCallDialog(fullName)
             return
@@ -1851,12 +1851,14 @@ class VideoCallActivity : AppCompatActivity() {
         pendingRoleKey = null
     }
 
-    private fun isUserAlreadyInCall(identity: String, userId: String): Boolean {
+    private fun isUserAlreadyInCall(identity: String, userId: String, fullName: String): Boolean {
         val currentRoom = room ?: return false
 
         // Check local participant
         currentRoom.localParticipant?.let { local ->
-            if (local.identity == identity || local.identity == userId) {
+            if (local.identity == identity || local.identity == userId ||
+                local.identity.contains(fullName, ignoreCase = true) ||
+                fullName.contains(local.identity, ignoreCase = true)) {
                 Log.d(TAG, "🔍 Match found in local participant: ${local.identity}")
                 return true
             }
@@ -1864,7 +1866,9 @@ class VideoCallActivity : AppCompatActivity() {
 
         // Check all remote participants
         currentRoom.remoteParticipants.forEach { participant ->
-            if (participant.identity == identity || participant.identity == userId) {
+            if (participant.identity == identity || participant.identity == userId ||
+                participant.identity.contains(fullName, ignoreCase = true) ||
+                fullName.contains(participant.identity, ignoreCase = true)) {
                 Log.d(TAG, "🔍 Match found in remote participant: ${participant.identity}")
                 return true
             }

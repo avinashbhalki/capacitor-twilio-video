@@ -993,12 +993,13 @@ class VideoCallViewController: UIViewController {
     }
 
     private func handleUserSelection(selectedUser: [String: String], selectedRoleKey: String) {
+
         let id = selectedUser["id"] ?? ""
         let userId = selectedUser["user_id"] ?? ""
         let fullName = selectedUser["full_name"] ?? ""
 
-        // Check if user is already in the call
-        if isUserAlreadyInCall(identity: id, userId: userId) {
+        // Check if user is already in the call (id, userId, or fullName contains)
+        if isUserAlreadyInCall(identity: id, userId: userId, fullName: fullName) {
             print("🚫 User already in call: \(fullName) (id=\(id), userId=\(userId))")
             showUserAlreadyInCallAlert(fullName: fullName)
             return
@@ -1022,14 +1023,14 @@ class VideoCallViewController: UIViewController {
         pendingRoleKey = nil
     }
 
-    private func isUserAlreadyInCall(identity: String, userId: String) -> Bool {
+    private func isUserAlreadyInCall(identity: String, userId: String, fullName: String) -> Bool {
         guard let room = room else {
             return false
         }
 
         // Check local participant
         if let localIdentity = localParticipant?.identity {
-            if localIdentity == identity || localIdentity == userId {
+            if localIdentity == identity || localIdentity == userId || localIdentity.contains(fullName) || fullName.contains(localIdentity) {
                 print("🔍 Match found in local participant: \(localIdentity)")
                 return true
             }
@@ -1038,7 +1039,7 @@ class VideoCallViewController: UIViewController {
         // Check all remote participants
         for participant in room.remoteParticipants {
             let participantIdentity = participant.identity
-            if participantIdentity == identity || participantIdentity == userId {
+            if participantIdentity == identity || participantIdentity == userId || participantIdentity.contains(fullName) || fullName.contains(participantIdentity) {
                 print("🔍 Match found in remote participant: \(participantIdentity)")
                 return true
             }
